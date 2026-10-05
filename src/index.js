@@ -27,7 +27,6 @@ const MAX_DESK_OFFSET = 100;
 const MAX_DESK_AREA = 50;
 const PUBLISH_PER_HOUR = 20;
 const LIST_LIMIT = 100;
-const MOD_RELEASE_KEY = "mod:latest";
 
 const CORS = {
   "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
@@ -213,14 +212,6 @@ async function route(request, env) {
   if (request.method === "OPTIONS")
     return new Response(null, { status: 204, headers: CORS });
   const url = new URL(request.url);
-  if (url.pathname === "/mod/latest") {
-    if (request.method !== "GET") return fail(405, "method not allowed");
-    const release = await env.PRESETS.get(MOD_RELEASE_KEY);
-    if (!release) return fail(404, "no release");
-    return new Response(release, {
-      headers: { ...CORS, "Content-Type": "application/json" },
-    });
-  }
   const [, root, type, id, extra] = url.pathname.split("/");
   if (root !== "presets" || !TYPES.includes(type) || extra !== undefined)
     return fail(404, "not found");
