@@ -1,0 +1,7 @@
+name = "gather-mods-hub"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+[[kv_namespaces]]
+binding = "PRESETS"
+id = "ecb47a392e434508af32023291cc2651"

@@ -1,0 +1,15 @@
+{
+  "name": "gather-mods-hub",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "release-mod": "node scripts/release-mod.mjs",
+    "launch": "node launcher/gather-mods-launcher.mjs",
+    "build-launcher-app": "node scripts/build-launcher-app.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.147.0"
+  }
+}
