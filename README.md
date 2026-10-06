@@ -1,6 +1,6 @@
 # Gather Mod Hub
 
-API du **hub communautaire** du [Gather Mod Menu](https://github.com/Trukl/gather-mod-menu) : stockage et partage des presets de tenues et de bureaux. Worker Cloudflare + KV, déployé sur `https://gather-mods-hub.minnecorentin.workers.dev`.
+API du **hub communautaire** du [Gather Mod Menu](https://github.com/Trukl/gather-mod-menu) : stockage et partage des presets de tenues, de bureaux et de constructions. Worker Cloudflare + KV, déployé sur `https://gather-mods-hub.minnecorentin.workers.dev`.
 
 Seule l'origine `https://app.v2.gather.town` est autorisée en CORS.
 
@@ -12,17 +12,18 @@ Seule l'origine `https://app.v2.gather.town` est autorisée en CORS.
 | `POST`   | `/presets/:type`     | Publie `{ author, data }`. Répond `{ id, type, deleteToken }`.                                        |
 | `DELETE` | `/presets/:type/:id` | Supprime, avec `Authorization: Bearer <deleteToken \| ADMIN_TOKEN>`.                                  |
 
-`type` vaut `outfit` ou `desk`.
+`type` vaut `outfit`, `desk` ou `construction`.
 
 ### Format des presets
 
 - **outfit** : `{ name, outfit: { skin, hair, facialHair, top, jacket, bottom, shoes, hat, glasses, other, costume, mobility }, summary }`. Chaque slot est optionnel et doit être un UUID de wearable Gather.
 - **desk** : `{ name, items: [{ variant, name, x, y, children: [...] }], area?: { width, height } }`. `variant` est un UUID de `CatalogItemVariant`, `x`/`y` sont en tuiles, relatifs au coin haut-gauche du bureau (ou à l'objet parent pour `children`).
+- **construction** : `{ name, items }`, mêmes `items` que `desk`, avec `x`/`y` relatifs au coin haut-gauche (aligné sur les tuiles) du groupe d'objets.
 
 ### Validation et limites
 
 - Noms et auteur : 40 caractères max ; résumé : 300.
-- Bureau : 200 objets max, 5 niveaux d'imbrication, positions dans ±100 tuiles, zone ≤ 50×50.
+- Bureau et construction : 200 objets max, 5 niveaux d'imbrication, positions dans ±100 tuiles, zone ≤ 50×50.
 - Corps de requête : 64 Ki max.
 - 20 publications par heure et par IP.
 - Le `deleteToken` n'est stocké que haché (SHA-256).
@@ -44,7 +45,7 @@ Le namespace KV `PRESETS` est fixé dans `wrangler.toml`.
 ```bash
 npx wrangler secret put ADMIN_TOKEN
 curl -X DELETE -H "Authorization: Bearer <ADMIN_TOKEN>" \
-  https://gather-mods-hub.minnecorentin.workers.dev/presets/<outfit|desk>/<id>
+  https://gather-mods-hub.minnecorentin.workers.dev/presets/<outfit|desk|construction>/<id>
 ```
 
 ## Développement local

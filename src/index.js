@@ -1,5 +1,5 @@
 const ALLOWED_ORIGIN = "https://app.v2.gather.town";
-const TYPES = ["outfit", "desk"];
+const TYPES = ["outfit", "desk", "construction"];
 const OUTFIT_SLOTS = [
   "skin",
   "hair",
@@ -107,7 +107,16 @@ function cleanDeskArea(a) {
     : null;
 }
 
-const CLEANERS = { outfit: cleanOutfit, desk: cleanDesk };
+function cleanConstruction(p) {
+  const desk = cleanDesk(p);
+  return desk && { name: desk.name, items: desk.items };
+}
+
+const CLEANERS = {
+  outfit: cleanOutfit,
+  desk: cleanDesk,
+  construction: cleanConstruction,
+};
 const summaryOf = (type, preset) =>
   type === "outfit"
     ? preset.summary
