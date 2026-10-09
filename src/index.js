@@ -14,8 +14,7 @@ const OUTFIT_SLOTS = [
   "costume",
   "mobility",
 ];
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ID_RE = /^\d{13}[0-9a-f]{8}$/;
 const MAX_BODY_CHARS = 64 * 1024;
 const MAX_NAME = 40;
@@ -27,10 +26,15 @@ const MAX_DESK_OFFSET = 100;
 const MAX_DESK_AREA = 50;
 const PUBLISH_PER_HOUR = 20;
 const LIST_LIMIT = 100;
+const ANIMATION_TYPES = ["orbit", "line", "wave"];
+const MAX_ANIMATIONS_PER_MAP = 50;
+const MAX_ANIMATION_OBJECTS = 100;
+const MAX_ANIMATION_COORD = 1_000_000;
+const ANIMATIONS_PER_HOUR = 30;
 
 const CORS = {
   "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
-  "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
   "Access-Control-Max-Age": "86400",
   Vary: "Origin",
@@ -59,8 +63,7 @@ function cleanOutfit(p) {
     if (typeof v !== "string" || !UUID_RE.test(v)) return null;
     outfit[slot] = v;
   }
-  const summary =
-    typeof p.summary === "string" ? p.summary.slice(0, MAX_SUMMARY) : "";
+  const summary = typeof p.summary === "string" ? p.summary.slice(0, MAX_SUMMARY) : "";
   return { name, outfit, summary };
 }
 
@@ -102,9 +105,7 @@ function cleanDesk(p) {
 
 function cleanDeskArea(a) {
   const valid = (n) => Number.isFinite(n) && n > 0 && n <= MAX_DESK_AREA;
-  return valid(a?.width) && valid(a?.height)
-    ? { width: a.width, height: a.height }
-    : null;
+  return valid(a?.width) && valid(a?.height) ? { width: a.width, height: a.height } : null;
 }
 
 function cleanConstruction(p) {
@@ -118,23 +119,53 @@ const CLEANERS = {
   construction: cleanConstruction,
 };
 const summaryOf = (type, preset) =>
-  type === "outfit"
-    ? preset.summary
-    : preset.items.map((i) => i.name).join(", ");
+  type === "outfit" ? preset.summary : preset.items.map((i) => i.name).join(", ");
+
+const inRange = (v, min, max) =>
+  typeof v === "number" && Number.isFinite(v) && v >= min && v <= max;
+
+function cleanAnimation(a) {
+  const name = cleanText(a?.name, MAX_NAME);
+  if (!name || !ANIMATION_TYPES.includes(a.type)) return null;
+  const ids = a.ids;
+  if (
+    !Array.isArray(ids) ||
+    !ids.length ||
+    ids.length > MAX_ANIMATION_OBJECTS ||
+    !ids.every((id) => typeof id === "string" && UUID_RE.test(id))
+  )
+    return null;
+  const { point, params } = a;
+  if (
+    !inRange(point?.x, -MAX_ANIMATION_COORD, MAX_ANIMATION_COORD) ||
+    !inRange(point?.y, -MAX_ANIMATION_COORD, MAX_ANIMATION_COORD) ||
+    !inRange(params?.period, 0.5, 600) ||
+    ![1, -1].includes(params.direction) ||
+    !inRange(params.amplitude, 0, 50) ||
+    !inRange(params.waves, 0.5, 50)
+  )
+    return null;
+  return {
+    name,
+    type: a.type,
+    ids: [...new Set(ids)],
+    point: { x: point.x, y: point.y },
+    params: {
+      period: params.period,
+      direction: params.direction,
+      amplitude: params.amplitude,
+      waves: params.waves,
+    },
+  };
+}
 
 async function sha256(s) {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(s),
-  );
-  return [...new Uint8Array(digest)]
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 const newId = () =>
-  String(1e13 - Date.now()).padStart(13, "0") +
-  crypto.randomUUID().replace(/-/g, "").slice(0, 8);
+  String(1e13 - Date.now()).padStart(13, "0") + crypto.randomUUID().replace(/-/g, "").slice(0, 8);
 
 async function collectMatchingKeys(env, type, q) {
   const keys = [];
@@ -206,10 +237,7 @@ async function deletePreset(env, type, id, request) {
   const key = `p:${type}:${id}`;
   const stored = await env.PRESETS.get(key, "json");
   if (!stored) return fail(404, "not found");
-  const token = (request.headers.get("Authorization") || "").replace(
-    /^Bearer\s+/i,
-    "",
-  );
+  const token = (request.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
   const isAdmin = Boolean(env.ADMIN_TOKEN) && token === env.ADMIN_TOKEN;
   if (!token || (!isAdmin && (await sha256(token)) !== stored.tokenHash))
     return fail(403, "forbidden");
@@ -217,11 +245,93 @@ async function deletePreset(env, type, id, request) {
   return json({ ok: true });
 }
 
+// All animations of a map live in one key: listing them costs a single read.
+const animationsKey = (mapId) => `a:${mapId}`;
+const readAnimations = async (env, mapId) =>
+  (await env.PRESETS.get(animationsKey(mapId), "json")) ?? [];
+const publicAnimation = ({ tokenHash, ...a }) => a;
+const bearer = (request) => (request.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
+
+async function readBody(request) {
+  const raw = await request.text();
+  if (raw.length > MAX_BODY_CHARS) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+async function listAnimations(env, mapId) {
+  const items = await readAnimations(env, mapId);
+  return json({ now: Date.now(), items: items.map(publicAnimation) });
+}
+
+async function createAnimation(env, mapId, request) {
+  const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+  const rateKey = `rla:${ip}:${Math.floor(Date.now() / 3_600_000)}`;
+  const count = Number(await env.PRESETS.get(rateKey)) || 0;
+  if (count >= ANIMATIONS_PER_HOUR) return fail(429, "too many animations");
+  const body = await readBody(request);
+  const data = cleanAnimation(body?.data);
+  if (!data) return fail(400, "invalid animation");
+  const items = await readAnimations(env, mapId);
+  if (items.length >= MAX_ANIMATIONS_PER_MAP) return fail(409, "too many animations on this map");
+  const editToken = crypto.randomUUID();
+  const animation = {
+    id: newId(),
+    author: cleanText(body.author, MAX_NAME) || "anonymous",
+    ...data,
+    running: true,
+    startedAt: Date.now(),
+    tokenHash: await sha256(editToken),
+  };
+  await env.PRESETS.put(animationsKey(mapId), JSON.stringify([...items, animation]));
+  await env.PRESETS.put(rateKey, String(count + 1), { expirationTtl: 3600 });
+  return json({ animation: publicAnimation(animation), editToken, now: Date.now() }, 201);
+}
+
+async function editAnimation(env, mapId, id, request) {
+  const items = await readAnimations(env, mapId);
+  const animation = items.find((a) => a.id === id);
+  if (!animation) return fail(404, "not found");
+  const token = bearer(request);
+  const isAdmin = Boolean(env.ADMIN_TOKEN) && token === env.ADMIN_TOKEN;
+  if (!token || (!isAdmin && (await sha256(token)) !== animation.tokenHash))
+    return fail(403, "forbidden");
+  if (request.method === "DELETE") {
+    await env.PRESETS.put(
+      animationsKey(mapId),
+      JSON.stringify(items.filter((a) => a !== animation)),
+    );
+    return json({ ok: true });
+  }
+  const body = await readBody(request);
+  if (typeof body?.running !== "boolean") return fail(400, "invalid change");
+  animation.running = body.running;
+  if (body.running) animation.startedAt = Date.now();
+  await env.PRESETS.put(animationsKey(mapId), JSON.stringify(items));
+  return json({ animation: publicAnimation(animation), now: Date.now() });
+}
+
+function routeAnimations(request, env, mapId, id) {
+  if (!UUID_RE.test(mapId || "")) return fail(404, "not found");
+  if (id === undefined || id === "") {
+    if (request.method === "GET") return listAnimations(env, mapId);
+    if (request.method === "POST") return createAnimation(env, mapId, request);
+    return fail(405, "method not allowed");
+  }
+  if (!ID_RE.test(id)) return fail(404, "not found");
+  if (request.method === "PATCH" || request.method === "DELETE")
+    return editAnimation(env, mapId, id, request);
+  return fail(405, "method not allowed");
+}
+
 async function route(request, env) {
-  if (request.method === "OPTIONS")
-    return new Response(null, { status: 204, headers: CORS });
+  if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
   const url = new URL(request.url);
   const [, root, type, id, extra] = url.pathname.split("/");
+  if (root === "animations" && extra === undefined) return routeAnimations(request, env, type, id);
   if (root !== "presets" || !TYPES.includes(type) || extra !== undefined)
     return fail(404, "not found");
   if (id === undefined || id === "") {
