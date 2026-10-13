@@ -1,0 +1,12 @@
+{
+  "name": "gather-mod-hub",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.147.0"
+  }
+}
