@@ -1,3 +1,5 @@
+import { createSession, sessionAccount, verifyGatherToken } from "./auth.js";
+
 const ALLOWED_ORIGIN = "https://app.v2.gather.town";
 const TYPES = ["outfit", "desk", "construction"];
 const OUTFIT_SLOTS = [
@@ -31,6 +33,7 @@ const MAX_ANIMATIONS_PER_MAP = 50;
 const MAX_ANIMATION_OBJECTS = 100;
 const MAX_ANIMATION_COORD = 1_000_000;
 const ANIMATIONS_PER_HOUR = 30;
+const MAX_CLAIMS = 200;
 
 const CORS = {
   "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
@@ -167,6 +170,41 @@ async function sha256(s) {
 const newId = () =>
   String(1e13 - Date.now()).padStart(13, "0") + crypto.randomUUID().replace(/-/g, "").slice(0, 8);
 
+const bearer = (request) => (request.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
+
+// The bearer is a hub session (signed in with Gather), the admin token, or the
+// per-item token handed out before sign-in existed.
+async function callerOf(env, request) {
+  const token = bearer(request);
+  return {
+    token,
+    accountId: await sessionAccount(env, token),
+    isAdmin: Boolean(env.ADMIN_TOKEN) && token === env.ADMIN_TOKEN,
+  };
+}
+async function canEdit(item, caller) {
+  if (caller.isAdmin) return true;
+  if (caller.accountId) return item.ownerId === caller.accountId;
+  return Boolean(item.tokenHash && caller.token) && (await sha256(caller.token)) === item.tokenHash;
+}
+// Items created while signed in belong to the account; the others get a token.
+async function ownership(caller) {
+  if (caller.accountId) return { stored: { ownerId: caller.accountId }, token: undefined };
+  const token = crypto.randomUUID();
+  return { stored: { tokenHash: await sha256(token) }, token };
+}
+const isMine = (item, caller) => Boolean(caller.accountId) && item.ownerId === caller.accountId;
+
+async function readBody(request) {
+  const raw = await request.text();
+  if (raw.length > MAX_BODY_CHARS) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
 async function collectMatchingKeys(env, type, q) {
   const keys = [];
   let cursor;
@@ -185,7 +223,7 @@ async function collectMatchingKeys(env, type, q) {
   return keys;
 }
 
-async function listPresets(env, type, url) {
+async function listPresets(env, type, url, caller) {
   const q = (url.searchParams.get("q") || "").trim().toLowerCase();
   const keys = await collectMatchingKeys(env, type, q);
   const items = await Promise.all(
@@ -193,54 +231,45 @@ async function listPresets(env, type, url) {
       const stored = await env.PRESETS.get(key.name, "json");
       if (!stored) return null;
       const id = key.name.slice(`p:${type}:`.length);
-      return { id, type, ...key.metadata, data: stored.data };
+      return { id, type, ...key.metadata, data: stored.data, mine: isMine(stored, caller) };
     }),
   );
   return json({ items: items.filter(Boolean) });
 }
 
-async function publishPreset(env, type, request) {
+const presetMeta = ({ name, author, summary, createdAt }) => ({ name, author, summary, createdAt });
+
+async function publishPreset(env, type, request, caller) {
   const ip = request.headers.get("CF-Connecting-IP") || "unknown";
   const rateKey = `rl:${ip}:${Math.floor(Date.now() / 3_600_000)}`;
   const count = Number(await env.PRESETS.get(rateKey)) || 0;
   if (count >= PUBLISH_PER_HOUR) return fail(429, "too many publishes");
 
-  const raw = await request.text();
-  if (raw.length > MAX_BODY_CHARS) return fail(413, "too large");
-  let body;
-  try {
-    body = JSON.parse(raw);
-  } catch {
-    return fail(400, "invalid json");
-  }
-  const data = CLEANERS[type](body?.data);
+  const body = await readBody(request);
+  if (!body) return fail(400, "invalid json or too large");
+  const data = CLEANERS[type](body.data);
   if (!data) return fail(400, "invalid preset");
 
   const id = newId();
-  const deleteToken = crypto.randomUUID();
   const meta = {
     name: data.name,
     author: cleanText(body.author, MAX_NAME) || "anonymous",
     summary: summaryOf(type, data).slice(0, MAX_META_SUMMARY),
     createdAt: new Date().toISOString(),
   };
-  await env.PRESETS.put(
-    `p:${type}:${id}`,
-    JSON.stringify({ ...meta, data, tokenHash: await sha256(deleteToken) }),
-    { metadata: meta },
-  );
+  const { stored, token } = await ownership(caller);
+  await env.PRESETS.put(`p:${type}:${id}`, JSON.stringify({ ...meta, data, ...stored }), {
+    metadata: meta,
+  });
   await env.PRESETS.put(rateKey, String(count + 1), { expirationTtl: 3600 });
-  return json({ id, type, deleteToken }, 201);
+  return json({ id, type, deleteToken: token }, 201);
 }
 
-async function deletePreset(env, type, id, request) {
+async function deletePreset(env, type, id, caller) {
   const key = `p:${type}:${id}`;
   const stored = await env.PRESETS.get(key, "json");
   if (!stored) return fail(404, "not found");
-  const token = (request.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
-  const isAdmin = Boolean(env.ADMIN_TOKEN) && token === env.ADMIN_TOKEN;
-  if (!token || (!isAdmin && (await sha256(token)) !== stored.tokenHash))
-    return fail(403, "forbidden");
+  if (!(await canEdit(stored, caller))) return fail(403, "forbidden");
   await env.PRESETS.delete(key);
   return json({ ok: true });
 }
@@ -249,25 +278,17 @@ async function deletePreset(env, type, id, request) {
 const animationsKey = (mapId) => `a:${mapId}`;
 const readAnimations = async (env, mapId) =>
   (await env.PRESETS.get(animationsKey(mapId), "json")) ?? [];
-const publicAnimation = ({ tokenHash, ...a }) => a;
-const bearer = (request) => (request.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
+const publicAnimation = ({ tokenHash, ownerId, ...a }, caller) => ({
+  ...a,
+  mine: isMine({ ownerId }, caller),
+});
 
-async function readBody(request) {
-  const raw = await request.text();
-  if (raw.length > MAX_BODY_CHARS) return null;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
-async function listAnimations(env, mapId) {
+async function listAnimations(env, mapId, caller) {
   const items = await readAnimations(env, mapId);
-  return json({ now: Date.now(), items: items.map(publicAnimation) });
+  return json({ now: Date.now(), items: items.map((a) => publicAnimation(a, caller)) });
 }
 
-async function createAnimation(env, mapId, request) {
+async function createAnimation(env, mapId, request, caller) {
   const ip = request.headers.get("CF-Connecting-IP") || "unknown";
   const rateKey = `rla:${ip}:${Math.floor(Date.now() / 3_600_000)}`;
   const count = Number(await env.PRESETS.get(rateKey)) || 0;
@@ -277,28 +298,28 @@ async function createAnimation(env, mapId, request) {
   if (!data) return fail(400, "invalid animation");
   const items = await readAnimations(env, mapId);
   if (items.length >= MAX_ANIMATIONS_PER_MAP) return fail(409, "too many animations on this map");
-  const editToken = crypto.randomUUID();
+  const { stored, token } = await ownership(caller);
   const animation = {
     id: newId(),
     author: cleanText(body.author, MAX_NAME) || "anonymous",
     ...data,
     running: true,
     startedAt: Date.now(),
-    tokenHash: await sha256(editToken),
+    ...stored,
   };
   await env.PRESETS.put(animationsKey(mapId), JSON.stringify([...items, animation]));
   await env.PRESETS.put(rateKey, String(count + 1), { expirationTtl: 3600 });
-  return json({ animation: publicAnimation(animation), editToken, now: Date.now() }, 201);
+  return json(
+    { animation: publicAnimation(animation, caller), editToken: token, now: Date.now() },
+    201,
+  );
 }
 
-async function editAnimation(env, mapId, id, request) {
+async function editAnimation(env, mapId, id, request, caller) {
   const items = await readAnimations(env, mapId);
   const animation = items.find((a) => a.id === id);
   if (!animation) return fail(404, "not found");
-  const token = bearer(request);
-  const isAdmin = Boolean(env.ADMIN_TOKEN) && token === env.ADMIN_TOKEN;
-  if (!token || (!isAdmin && (await sha256(token)) !== animation.tokenHash))
-    return fail(403, "forbidden");
+  if (!(await canEdit(animation, caller))) return fail(403, "forbidden");
   if (request.method === "DELETE") {
     await env.PRESETS.put(
       animationsKey(mapId),
@@ -311,36 +332,88 @@ async function editAnimation(env, mapId, id, request) {
   animation.running = body.running;
   if (body.running) animation.startedAt = Date.now();
   await env.PRESETS.put(animationsKey(mapId), JSON.stringify(items));
-  return json({ animation: publicAnimation(animation), now: Date.now() });
+  return json({ animation: publicAnimation(animation, caller), now: Date.now() });
 }
 
-function routeAnimations(request, env, mapId, id) {
+function routeAnimations(request, env, mapId, id, caller) {
   if (!UUID_RE.test(mapId || "")) return fail(404, "not found");
   if (id === undefined || id === "") {
-    if (request.method === "GET") return listAnimations(env, mapId);
-    if (request.method === "POST") return createAnimation(env, mapId, request);
+    if (request.method === "GET") return listAnimations(env, mapId, caller);
+    if (request.method === "POST") return createAnimation(env, mapId, request, caller);
     return fail(405, "method not allowed");
   }
   if (!ID_RE.test(id)) return fail(404, "not found");
   if (request.method === "PATCH" || request.method === "DELETE")
-    return editAnimation(env, mapId, id, request);
+    return editAnimation(env, mapId, id, request, caller);
   return fail(405, "method not allowed");
+}
+
+async function signIn(env, request) {
+  const body = await readBody(request);
+  const accountId = await verifyGatherToken(body?.gatherToken);
+  if (!accountId) return fail(401, "invalid Gather token");
+  return json(await createSession(env, accountId));
+}
+
+// Hands the items created before sign-in to the account, given their tokens.
+async function claim(env, request, caller) {
+  if (!caller.accountId) return fail(401, "sign in required");
+  const body = await readBody(request);
+  const presets = Array.isArray(body?.presets) ? body.presets : [];
+  const animations = Array.isArray(body?.animations) ? body.animations : [];
+  if (presets.length + animations.length > MAX_CLAIMS) return fail(413, "too many claims");
+  const proves = async (item, token) =>
+    typeof token === "string" &&
+    Boolean(item.tokenHash) &&
+    (await sha256(token)) === item.tokenHash;
+  const handOver = ({ tokenHash, ...item }) => ({ ...item, ownerId: caller.accountId });
+  const claimed = [];
+  for (const { type, id, token } of presets) {
+    if (!TYPES.includes(type) || !ID_RE.test(id || "")) continue;
+    const key = `p:${type}:${id}`;
+    const stored = await env.PRESETS.get(key, "json");
+    if (!stored || !(await proves(stored, token))) continue;
+    await env.PRESETS.put(key, JSON.stringify(handOver(stored)), { metadata: presetMeta(stored) });
+    claimed.push(id);
+  }
+  const byMap = Map.groupBy(
+    animations.filter((a) => UUID_RE.test(a?.mapId || "") && ID_RE.test(a.id || "")),
+    (a) => a.mapId,
+  );
+  for (const [mapId, claims] of byMap) {
+    const items = await readAnimations(env, mapId);
+    const before = claimed.length;
+    for (const [i, item] of items.entries()) {
+      const match = claims.find((c) => c.id === item.id);
+      if (!match || !(await proves(item, match.token))) continue;
+      items[i] = handOver(item);
+      claimed.push(item.id);
+    }
+    if (claimed.length > before) await env.PRESETS.put(animationsKey(mapId), JSON.stringify(items));
+  }
+  return json({ claimed });
 }
 
 async function route(request, env) {
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
   const url = new URL(request.url);
   const [, root, type, id, extra] = url.pathname.split("/");
-  if (root === "animations" && extra === undefined) return routeAnimations(request, env, type, id);
+  if (root === "auth" && id === undefined && request.method === "POST") {
+    if (type === undefined) return signIn(env, request);
+    if (type === "claim") return claim(env, request, await callerOf(env, request));
+  }
+  const caller = await callerOf(env, request);
+  if (root === "animations" && extra === undefined)
+    return routeAnimations(request, env, type, id, caller);
   if (root !== "presets" || !TYPES.includes(type) || extra !== undefined)
     return fail(404, "not found");
   if (id === undefined || id === "") {
-    if (request.method === "GET") return listPresets(env, type, url);
-    if (request.method === "POST") return publishPreset(env, type, request);
+    if (request.method === "GET") return listPresets(env, type, url, caller);
+    if (request.method === "POST") return publishPreset(env, type, request, caller);
     return fail(405, "method not allowed");
   }
   if (!ID_RE.test(id)) return fail(404, "not found");
-  if (request.method === "DELETE") return deletePreset(env, type, id, request);
+  if (request.method === "DELETE") return deletePreset(env, type, id, caller);
   return fail(405, "method not allowed");
 }
 

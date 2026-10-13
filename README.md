@@ -4,17 +4,25 @@ API of the **community hub** of the [Gather Mod Menu](https://github.com/Trukl/g
 
 CORS only allows the `https://app.v2.gather.town` origin.
 
+## Sign-in with the Gather account
+
+The mod reads Gather's Firebase ID token from the page and sends it to `POST /auth`. The hub checks its signature against Google's public keys, its issuer (`securetoken.google.com/gather-town-v2`), audience and expiry, keeps only the Gather account id (`gather.userAccountId`, never the token nor the email) and answers a hub session valid 30 days, signed with `SESSION_SECRET`. Requests then send `Authorization: Bearer <session>`.
+
+Presets and animations created with a session belong to that Gather account (`ownerId`, never returned): every client of that account can delete or start/stop them, and lists flag them with `mine: true`. Items created before sign-in keep their `deleteToken`/`editToken` until `POST /auth/claim` hands them to the account.
+
 ## API
 
-| Method   | Route                    | Purpose                                                                                          |
-| -------- | ------------------------ | ------------------------------------------------------------------------------------------------ |
-| `GET`    | `/presets/:type?q=`      | List (100 max, newest first), with the full preset. `q` filters on name, author and content.     |
-| `POST`   | `/presets/:type`         | Publishes `{ author, data }`. Answers `{ id, type, deleteToken }`.                               |
-| `DELETE` | `/presets/:type/:id`     | Deletes, with `Authorization: Bearer <deleteToken \| ADMIN_TOKEN>`.                              |
-| `GET`    | `/animations/:mapId`     | Animations of a Gather map, with the server time `now` (clients sync their clock on it).         |
-| `POST`   | `/animations/:mapId`     | Creates `{ author, data }`, running. Answers `{ animation, editToken, now }`.                    |
-| `PATCH`  | `/animations/:mapId/:id` | `{ running }` starts (from the beginning) or stops it, with `Bearer <editToken \| ADMIN_TOKEN>`. |
-| `DELETE` | `/animations/:mapId/:id` | Deletes, with `Bearer <editToken \| ADMIN_TOKEN>`.                                               |
+| Method   | Route                    | Purpose                                                                                                             |
+| -------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| `POST`   | `/auth`                  | `{ gatherToken }` → `{ session, expiresAt }`.                                                                       |
+| `POST`   | `/auth/claim`            | With a session: `{ presets: [{ type, id, token }], animations: [{ mapId, id, token }] }` → `{ claimed: [ids] }`.    |
+| `GET`    | `/presets/:type?q=`      | List (100 max, newest first), with the full preset and `mine`. `q` filters on name, author and content.             |
+| `POST`   | `/presets/:type`         | Publishes `{ author, data }`. Answers `{ id, type }` (plus `deleteToken` when not signed in).                       |
+| `DELETE` | `/presets/:type/:id`     | Deletes, with `Bearer <owner's session \| deleteToken \| ADMIN_TOKEN>`.                                             |
+| `GET`    | `/animations/:mapId`     | Animations of a Gather map with `mine`, and the server time `now` (clients sync their clock on it).                 |
+| `POST`   | `/animations/:mapId`     | Creates `{ author, data }`, running. Answers `{ animation, now }` (plus `editToken` when not signed in).            |
+| `PATCH`  | `/animations/:mapId/:id` | `{ running }` starts (from the beginning) or stops it, with `Bearer <owner's session \| editToken \| ADMIN_TOKEN>`. |
+| `DELETE` | `/animations/:mapId/:id` | Deletes, with `Bearer <owner's session \| editToken \| ADMIN_TOKEN>`.                                               |
 
 `type` is `outfit`, `desk` or `construction`.
 
@@ -47,7 +55,13 @@ npx wrangler login
 npm run deploy
 ```
 
-The `PRESETS` KV namespace is set in `wrangler.toml`.
+The `PRESETS` KV namespace is set in `wrangler.toml`. Sessions are signed with a secret:
+
+```bash
+openssl rand -base64 32 | npx wrangler secret put SESSION_SECRET
+```
+
+Changing it signs everyone out (the mod signs in again on its next request).
 
 ### Moderation
 
@@ -60,5 +74,5 @@ curl -X DELETE -H "Authorization: Bearer <ADMIN_TOKEN>" \
 ## Local development
 
 ```bash
-npm run dev   # http://localhost:8787, local KV in .wrangler/
+npm run dev   # http://localhost:8787, local KV in .wrangler/, secrets in .dev.vars (SESSION_SECRET=...)
 ```
