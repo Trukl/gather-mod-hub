@@ -29,7 +29,7 @@ const MAX_DESK_AREA = 50;
 const PUBLISH_PER_HOUR = 20;
 const LIST_LIMIT = 100;
 const ANIMATION_TYPES = ["orbit", "line", "wave"];
-const MAX_ANIMATIONS_PER_MAP = 50;
+const MAX_ANIMATIONS_PER_FLOOR = 50;
 const MAX_ANIMATION_OBJECTS = 100;
 const MAX_ANIMATION_COORD = 1_000_000;
 const ANIMATIONS_PER_HOUR = 30;
@@ -127,19 +127,29 @@ const summaryOf = (type, preset) =>
 const inRange = (v, min, max) =>
   typeof v === "number" && Number.isFinite(v) && v >= min && v <= max;
 
+// Animated objects are stable references: Gather's hashIdentifier (kept when
+// a new version of the map is published) plus type and position (tiles).
+function cleanObjectRefs(objects) {
+  if (!Array.isArray(objects) || !objects.length || objects.length > MAX_ANIMATION_OBJECTS)
+    return null;
+  const refs = objects.map((o) =>
+    UUID_RE.test(o?.hash || "") &&
+    UUID_RE.test(o.variant || "") &&
+    inRange(o.x, -MAX_ANIMATION_COORD, MAX_ANIMATION_COORD) &&
+    inRange(o.y, -MAX_ANIMATION_COORD, MAX_ANIMATION_COORD)
+      ? { hash: o.hash, variant: o.variant, x: o.x, y: o.y }
+      : null,
+  );
+  return refs.includes(null) ? null : refs;
+}
+
 function cleanAnimation(a) {
   const name = cleanText(a?.name, MAX_NAME);
   if (!name || !ANIMATION_TYPES.includes(a.type)) return null;
-  const ids = a.ids;
-  if (
-    !Array.isArray(ids) ||
-    !ids.length ||
-    ids.length > MAX_ANIMATION_OBJECTS ||
-    !ids.every((id) => typeof id === "string" && UUID_RE.test(id))
-  )
-    return null;
+  const objects = cleanObjectRefs(a.objects);
   const { point, params } = a;
   if (
+    !objects ||
     !inRange(point?.x, -MAX_ANIMATION_COORD, MAX_ANIMATION_COORD) ||
     !inRange(point?.y, -MAX_ANIMATION_COORD, MAX_ANIMATION_COORD) ||
     !inRange(params?.period, 0.5, 600) ||
@@ -151,7 +161,7 @@ function cleanAnimation(a) {
   return {
     name,
     type: a.type,
-    ids: [...new Set(ids)],
+    objects,
     point: { x: point.x, y: point.y },
     params: {
       period: params.period,
@@ -274,21 +284,55 @@ async function deletePreset(env, type, id, caller) {
   return json({ ok: true });
 }
 
-// All animations of a map live in one key: listing them costs a single read.
-const animationsKey = (mapId) => `a:${mapId}`;
-const readAnimations = async (env, mapId) =>
-  (await env.PRESETS.get(animationsKey(mapId), "json")) ?? [];
+// All animations of a floor live in one key: listing them costs a single read.
+// The floor survives new versions of its map, whose id changes.
+const animationsKey = (floorId) => `af:${floorId}`;
+// Before stable references, animations were stored per map version, with object ids.
+const legacyAnimationsKey = (mapId) => `a:${mapId}`;
+const readAnimations = async (env, floorId) =>
+  (await env.PRESETS.get(animationsKey(floorId), "json")) ?? [];
 const publicAnimation = ({ tokenHash, ownerId, ...a }, caller) => ({
   ...a,
   mine: isMine({ ownerId }, caller),
 });
 
-async function listAnimations(env, mapId, caller) {
-  const items = await readAnimations(env, mapId);
+// `?map=` adds the legacy animations of that map version, for the client to migrate.
+async function listAnimations(env, floorId, url, caller) {
+  const items = await readAnimations(env, floorId);
+  const mapId = url.searchParams.get("map");
+  const legacy = UUID_RE.test(mapId || "")
+    ? await env.PRESETS.get(legacyAnimationsKey(mapId), "json")
+    : null;
+  return json({
+    now: Date.now(),
+    items: items.map((a) => publicAnimation(a, caller)),
+    ...(legacy?.length && { legacy: legacy.map((a) => publicAnimation(a, caller)) }),
+  });
+}
+
+// The client still has the objects of the legacy animations' map version and
+// sends their references; unresolved animations (objects gone) are dropped.
+async function migrateAnimations(env, floorId, request, caller) {
+  if (!caller.accountId) return fail(401, "sign in required");
+  const body = await readBody(request);
+  if (!UUID_RE.test(body?.mapId || "")) return fail(400, "invalid map");
+  const legacy = (await env.PRESETS.get(legacyAnimationsKey(body.mapId), "json")) ?? [];
+  const refs = new Map(
+    (Array.isArray(body.items) ? body.items : []).map((i) => [i?.id, i?.objects]),
+  );
+  const items = await readAnimations(env, floorId);
+  const known = new Set(items.map((a) => a.id));
+  for (const { ids, ...animation } of legacy) {
+    const objects = cleanObjectRefs(refs.get(animation.id));
+    if (!objects || known.has(animation.id) || items.length >= MAX_ANIMATIONS_PER_FLOOR) continue;
+    items.push({ ...animation, objects });
+  }
+  await env.PRESETS.put(animationsKey(floorId), JSON.stringify(items));
+  await env.PRESETS.delete(legacyAnimationsKey(body.mapId));
   return json({ now: Date.now(), items: items.map((a) => publicAnimation(a, caller)) });
 }
 
-async function createAnimation(env, mapId, request, caller) {
+async function createAnimation(env, floorId, request, caller) {
   const ip = request.headers.get("CF-Connecting-IP") || "unknown";
   const rateKey = `rla:${ip}:${Math.floor(Date.now() / 3_600_000)}`;
   const count = Number(await env.PRESETS.get(rateKey)) || 0;
@@ -296,8 +340,9 @@ async function createAnimation(env, mapId, request, caller) {
   const body = await readBody(request);
   const data = cleanAnimation(body?.data);
   if (!data) return fail(400, "invalid animation");
-  const items = await readAnimations(env, mapId);
-  if (items.length >= MAX_ANIMATIONS_PER_MAP) return fail(409, "too many animations on this map");
+  const items = await readAnimations(env, floorId);
+  if (items.length >= MAX_ANIMATIONS_PER_FLOOR)
+    return fail(409, "too many animations on this floor");
   const { stored, token } = await ownership(caller);
   const animation = {
     id: newId(),
@@ -307,7 +352,7 @@ async function createAnimation(env, mapId, request, caller) {
     startedAt: Date.now(),
     ...stored,
   };
-  await env.PRESETS.put(animationsKey(mapId), JSON.stringify([...items, animation]));
+  await env.PRESETS.put(animationsKey(floorId), JSON.stringify([...items, animation]));
   await env.PRESETS.put(rateKey, String(count + 1), { expirationTtl: 3600 });
   return json(
     { animation: publicAnimation(animation, caller), editToken: token, now: Date.now() },
@@ -315,14 +360,14 @@ async function createAnimation(env, mapId, request, caller) {
   );
 }
 
-async function editAnimation(env, mapId, id, request, caller) {
-  const items = await readAnimations(env, mapId);
+async function editAnimation(env, floorId, id, request, caller) {
+  const items = await readAnimations(env, floorId);
   const animation = items.find((a) => a.id === id);
   if (!animation) return fail(404, "not found");
   if (!(await canEdit(animation, caller))) return fail(403, "forbidden");
   if (request.method === "DELETE") {
     await env.PRESETS.put(
-      animationsKey(mapId),
+      animationsKey(floorId),
       JSON.stringify(items.filter((a) => a !== animation)),
     );
     return json({ ok: true });
@@ -331,20 +376,22 @@ async function editAnimation(env, mapId, id, request, caller) {
   if (typeof body?.running !== "boolean") return fail(400, "invalid change");
   animation.running = body.running;
   if (body.running) animation.startedAt = Date.now();
-  await env.PRESETS.put(animationsKey(mapId), JSON.stringify(items));
+  await env.PRESETS.put(animationsKey(floorId), JSON.stringify(items));
   return json({ animation: publicAnimation(animation, caller), now: Date.now() });
 }
 
-function routeAnimations(request, env, mapId, id, caller) {
-  if (!UUID_RE.test(mapId || "")) return fail(404, "not found");
+function routeAnimations(request, env, floorId, id, url, caller) {
+  if (!UUID_RE.test(floorId || "")) return fail(404, "not found");
   if (id === undefined || id === "") {
-    if (request.method === "GET") return listAnimations(env, mapId, caller);
-    if (request.method === "POST") return createAnimation(env, mapId, request, caller);
+    if (request.method === "GET") return listAnimations(env, floorId, url, caller);
+    if (request.method === "POST") return createAnimation(env, floorId, request, caller);
     return fail(405, "method not allowed");
   }
+  if (id === "migrate" && request.method === "POST")
+    return migrateAnimations(env, floorId, request, caller);
   if (!ID_RE.test(id)) return fail(404, "not found");
   if (request.method === "PATCH" || request.method === "DELETE")
-    return editAnimation(env, mapId, id, request, caller);
+    return editAnimation(env, floorId, id, request, caller);
   return fail(405, "method not allowed");
 }
 
@@ -376,12 +423,12 @@ async function claim(env, request, caller) {
     await env.PRESETS.put(key, JSON.stringify(handOver(stored)), { metadata: presetMeta(stored) });
     claimed.push(id);
   }
-  const byMap = Map.groupBy(
-    animations.filter((a) => UUID_RE.test(a?.mapId || "") && ID_RE.test(a.id || "")),
-    (a) => a.mapId,
+  const byFloor = Map.groupBy(
+    animations.filter((a) => UUID_RE.test(a?.floorId || "") && ID_RE.test(a.id || "")),
+    (a) => a.floorId,
   );
-  for (const [mapId, claims] of byMap) {
-    const items = await readAnimations(env, mapId);
+  for (const [floorId, claims] of byFloor) {
+    const items = await readAnimations(env, floorId);
     const before = claimed.length;
     for (const [i, item] of items.entries()) {
       const match = claims.find((c) => c.id === item.id);
@@ -389,7 +436,8 @@ async function claim(env, request, caller) {
       items[i] = handOver(item);
       claimed.push(item.id);
     }
-    if (claimed.length > before) await env.PRESETS.put(animationsKey(mapId), JSON.stringify(items));
+    if (claimed.length > before)
+      await env.PRESETS.put(animationsKey(floorId), JSON.stringify(items));
   }
   return json({ claimed });
 }
@@ -404,7 +452,7 @@ async function route(request, env) {
   }
   const caller = await callerOf(env, request);
   if (root === "animations" && extra === undefined)
-    return routeAnimations(request, env, type, id, caller);
+    return routeAnimations(request, env, type, id, url, caller);
   if (root !== "presets" || !TYPES.includes(type) || extra !== undefined)
     return fail(404, "not found");
   if (id === undefined || id === "") {
