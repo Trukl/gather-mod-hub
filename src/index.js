@@ -1,4 +1,5 @@
 import { createSession, sessionAccount, verifyGatherToken } from "./auth.js";
+import { installStats, reportInstall } from "./installs.js";
 
 const ALLOWED_ORIGIN = "https://app.v2.gather.town";
 const TYPES = ["outfit", "desk", "construction"];
@@ -454,9 +455,13 @@ async function route(request, env) {
     if (type === undefined) return signIn(env, request);
     if (type === "claim") return claim(env, request, await callerOf(env, request));
   }
+  if (root === "installs" && type === undefined && request.method === "POST")
+    return reportInstall(env, await readBody(request), json, fail);
   const caller = await callerOf(env, request);
   if (!caller.accountId && !caller.isAdmin && Date.now() >= SIGN_IN_REQUIRED_FROM)
     return fail(401, "sign in required");
+  if (root === "stats" && type === undefined && request.method === "GET")
+    return caller.isAdmin ? installStats(env, json) : fail(403, "forbidden");
   if (root === "animations" && extra === undefined)
     return routeAnimations(request, env, type, id, url, caller);
   if (root !== "presets" || !TYPES.includes(type) || extra !== undefined)

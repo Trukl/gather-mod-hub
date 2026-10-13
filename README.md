@@ -14,18 +14,20 @@ From 2026-10-20 16:30 UTC (`SIGN_IN_REQUIRED_FROM`), every route but `POST /auth
 
 ## API
 
-| Method   | Route                          | Purpose                                                                                                                                                                                            |
-| -------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST`   | `/auth`                        | `{ gatherToken }` → `{ session, expiresAt }`.                                                                                                                                                      |
-| `POST`   | `/auth/claim`                  | With a session: `{ presets: [{ type, id, token }], animations: [{ floorId, id, token }] }` → `{ claimed: [ids] }`.                                                                                 |
-| `GET`    | `/presets/:type?q=`            | List (100 max, newest first), with the full preset and `mine`. `q` filters on name, author and content.                                                                                            |
-| `POST`   | `/presets/:type`               | Publishes `{ author, data }`. Answers `{ id, type }` (plus `deleteToken` when not signed in).                                                                                                      |
-| `DELETE` | `/presets/:type/:id`           | Deletes, with `Bearer <owner's session \| deleteToken \| ADMIN_TOKEN>`.                                                                                                                            |
-| `GET`    | `/animations/:floorId?map=`    | Animations of a Gather floor with `mine`, and the server time `now` (clients sync their clock on it). With `map`, also `legacy`: the animations still stored for that map version.                 |
-| `POST`   | `/animations/:floorId`         | Creates `{ author, data }`, running. Answers `{ animation, now }` (plus `editToken` when not signed in).                                                                                           |
-| `POST`   | `/animations/:floorId/migrate` | With a session: `{ mapId, items: [{ id, objects }] }` moves that map version's legacy animations to the floor with the given object references (the others are dropped). Answers `{ now, items }`. |
-| `PATCH`  | `/animations/:floorId/:id`     | `{ running }` starts (from the beginning) or stops it, with `Bearer <owner's session \| editToken \| ADMIN_TOKEN>`.                                                                                |
-| `DELETE` | `/animations/:floorId/:id`     | Deletes, with `Bearer <owner's session \| editToken \| ADMIN_TOKEN>`.                                                                                                                              |
+| Method   | Route                          | Purpose                                                                                                                                                                                                                                                       |
+| -------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST`   | `/auth`                        | `{ gatherToken }` → `{ session, expiresAt }`.                                                                                                                                                                                                                 |
+| `POST`   | `/auth/claim`                  | With a session: `{ presets: [{ type, id, token }], animations: [{ floorId, id, token }] }` → `{ claimed: [ids] }`.                                                                                                                                            |
+| `GET`    | `/presets/:type?q=`            | List (100 max, newest first), with the full preset and `mine`. `q` filters on name, author and content.                                                                                                                                                       |
+| `POST`   | `/presets/:type`               | Publishes `{ author, data }`. Answers `{ id, type }` (plus `deleteToken` when not signed in).                                                                                                                                                                 |
+| `DELETE` | `/presets/:type/:id`           | Deletes, with `Bearer <owner's session \| deleteToken \| ADMIN_TOKEN>`.                                                                                                                                                                                       |
+| `GET`    | `/animations/:floorId?map=`    | Animations of a Gather floor with `mine`, and the server time `now` (clients sync their clock on it). With `map`, also `legacy`: the animations still stored for that map version.                                                                            |
+| `POST`   | `/animations/:floorId`         | Creates `{ author, data }`, running. Answers `{ animation, now }` (plus `editToken` when not signed in).                                                                                                                                                      |
+| `POST`   | `/animations/:floorId/migrate` | With a session: `{ mapId, items: [{ id, objects }] }` moves that map version's legacy animations to the floor with the given object references (the others are dropped). Answers `{ now, items }`.                                                            |
+| `PATCH`  | `/animations/:floorId/:id`     | `{ running }` starts (from the beginning) or stops it, with `Bearer <owner's session \| editToken \| ADMIN_TOKEN>`.                                                                                                                                           |
+| `DELETE` | `/animations/:floorId/:id`     | Deletes, with `Bearer <owner's session \| editToken \| ADMIN_TOKEN>`.                                                                                                                                                                                         |
+| `POST`   | `/installs`                    | `{ gatherToken, installId, launcher, versions: { core: "1.3.0", … } }`: the mod's core reports its installed module versions on first install and after each update. The Gather token is verified like `/auth`; only the account id is kept, with the report. |
+| `GET`    | `/stats`                       | With `ADMIN_TOKEN`: `{ installs, accounts, launcher, updatedLast30Days, modules: { id: { version: count } }, items }`.                                                                                                                                        |
 
 `type` is `outfit`, `desk` or `construction`.
 
@@ -75,6 +77,14 @@ npx wrangler secret put ADMIN_TOKEN
 curl -X DELETE -H "Authorization: Bearer <ADMIN_TOKEN>" \
   https://gather-mods-hub.minnecorentin.workers.dev/presets/<outfit|desk|construction>/<id>
 ```
+
+### Usage
+
+```bash
+curl -H "Authorization: Bearer <ADMIN_TOKEN>" https://gather-mods-hub.minnecorentin.workers.dev/stats
+```
+
+An install is one Gather client (the desktop app or a browser), identified by a random id the mod keeps in `localStorage`; it is reported again only when its versions change.
 
 ## Local development
 
