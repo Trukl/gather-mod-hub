@@ -52,11 +52,21 @@ Listing relies on `KV.list`: a new preset can take up to ~60 s to show up. The a
 
 ## Deploy
 
+Every push to `main` that touches `src/`, `wrangler.toml` or the npm files is deployed by the `Deploy hub` GitHub workflow (`.github/workflows/deploy.yml`); run it by hand from the Actions tab if needed. It needs a `CLOUDFLARE_API_TOKEN` repository secret: a Cloudflare API token from the “Edit Cloudflare Workers” template, limited to this account.
+
+```bash
+gh secret set CLOUDFLARE_API_TOKEN --repo Trukl/gather-mod-hub
+```
+
+Deploying from a local checkout still works:
+
 ```bash
 npm install
 npx wrangler login
 npm run deploy
 ```
+
+Deploys never touch the worker's secrets (`SESSION_SECRET`, `ADMIN_TOKEN`).
 
 The `PRESETS` KV namespace is set in `wrangler.toml`. Sessions are signed with a secret:
 
