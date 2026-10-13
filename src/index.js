@@ -4,6 +4,7 @@ import { claimAnimations, routeAnimations } from "./animations.js";
 import { CORS, fail, json, readBody } from "./common.js";
 import { installStats, reportInstall } from "./installs.js";
 import { claimPresets, routePresets } from "./presets.js";
+import { updateRequired } from "./versions.js";
 
 // Mods older than Community hub 1.1.0 / Fun 1.3.0 don't sign in: they are
 // served until this date, then every route but sign-in requires a session.
@@ -31,8 +32,10 @@ async function route(request, env) {
   const [, root, type, id, extra] = url.pathname.split("/");
   if (extra !== undefined) return fail(404, "not found");
   const post = request.method === "POST";
-  if (root === "auth" && type === undefined && post) return signIn(env, request);
   if (root === "installs" && type === undefined && post) return reportInstall(env, request);
+  const outdated = await updateRequired(env, request);
+  if (outdated) return outdated;
+  if (root === "auth" && type === undefined && post) return signIn(env, request);
 
   const caller = await callerOf(env, request);
   if (root === "auth" && type === "claim" && id === undefined && post)
