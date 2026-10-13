@@ -10,7 +10,7 @@ export const MAX_NAME = 40;
 export const CORS = {
   "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
   "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Gather-Mods",
   "Access-Control-Max-Age": "86400",
   Vary: "Origin",
 };

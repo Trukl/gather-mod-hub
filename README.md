@@ -12,6 +12,10 @@ Presets and animations created with a session belong to that Gather account (`ow
 
 From 2026-10-20 16:30 UTC (`SIGN_IN_REQUIRED_FROM`), every route but `POST /auth` requires a session (or `ADMIN_TOKEN`): requests without one get `401 sign in required`, so only people signed in to Gather with the mod can read or publish. Until then, mods that don't sign in yet (before Community hub 1.1.0 / Fun 1.3.0) are still served.
 
+## Required updates
+
+From Core 1.4.0, the mod sends the versions of its running modules with every request, in the `X-Gather-Mods` header (`core=1.4.0,hub-api=1.3.0,…`). The hub reads the published catalog of the mod (key `catalog:latest` of the release worker's `RELEASES` KV namespace, cached 5 minutes): a changelog entry marked `"breaking": true` is the minimum version of its module. When a running module is below it, every route but `POST /installs` answers `426 { error: "update required", modules: [{ id, changelog: [breaking entries it misses] }] }`, and the mod opens its “Update required” window. Requests without the header (mods before Core 1.4.0) are not checked.
+
 ## API
 
 | Method   | Route                          | Purpose                                                                                                                                                                                                                                                       |
@@ -73,7 +77,7 @@ npm run deploy
 
 Deploys never touch the worker's secrets (`SESSION_SECRET`, `ADMIN_TOKEN`).
 
-The `PRESETS` KV namespace is set in `wrangler.toml`. Sessions are signed with a secret:
+The `PRESETS` KV namespace and the mod's `RELEASES` namespace (read only, for required updates) are set in `wrangler.toml`. Sessions are signed with a secret:
 
 ```bash
 openssl rand -base64 32 | npx wrangler secret put SESSION_SECRET
@@ -107,6 +111,7 @@ An install is one Gather client (the desktop app or a browser), identified by a 
 | `src/presets.js`    | Presets validation and routes                                            |
 | `src/animations.js` | Animations validation, routes and migration from per-map storage         |
 | `src/installs.js`   | Install reports and admin stats                                          |
+| `src/versions.js`   | Required updates: running versions against the published catalog         |
 | `src/common.js`     | HTTP helpers (CORS, JSON) and validation primitives                      |
 
 ## Local development

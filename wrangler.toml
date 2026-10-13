@@ -5,3 +5,8 @@ compatibility_date = "2026-10-01"
 [[kv_namespaces]]
 binding = "PRESETS"
 id = "ecb47a392e434508af32023291cc2651"
+
+# Published catalog of the mod, read for the minimum module versions.
+[[kv_namespaces]]
+binding = "RELEASES"
+id = "c5a1b295c30f489cb054497aa6eaf418"
