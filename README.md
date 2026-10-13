@@ -32,6 +32,9 @@ From Core 1.4.0, the mod sends the versions of its running modules with every re
 | `DELETE` | `/animations/:floorId/:id`     | Deletes, with `Bearer <owner's session \| editToken \| ADMIN_TOKEN>`.                                                                                                                                                                                         |
 | `POST`   | `/installs`                    | `{ gatherToken, installId, launcher, versions: { core: "1.3.0", … } }`: the mod's core reports its installed module versions on first install and after each update. The Gather token is verified like `/auth`; only the account id is kept, with the report. |
 | `GET`    | `/stats`                       | With `ADMIN_TOKEN`: `{ installs, accounts, launcher, updatedLast30Days, modules: { id: { version: count } }, items }`.                                                                                                                                        |
+| `GET`    | `/announcements`               | Active announcements, without session: `{ announcements: [{ id, title, message, level, createdAt, expiresAt }] }`.                                                                                                                                            |
+| `POST`   | `/announcements`               | With `ADMIN_TOKEN`: `{ title, message, level: "info" \| "warning", hours }` (title 60 and message 500 characters max, 24 hours by default, 30 days max). Answers `{ announcement }`.                                                                          |
+| `DELETE` | `/announcements/:id`           | With `ADMIN_TOKEN`: removes it before it expires.                                                                                                                                                                                                             |
 
 `type` is `outfit`, `desk` or `construction`.
 
@@ -101,18 +104,32 @@ curl -H "Authorization: Bearer <ADMIN_TOKEN>" https://gather-mods-hub.minnecoren
 
 An install is one Gather client (the desktop app or a browser), identified by a random id the mod keeps in `localStorage`; it is reported again only when its versions change.
 
+### Announcements
+
+Messages to every user of the mod (maintenance, incident, new feature). From Core 1.5.0, the mod checks every 10 minutes: a new announcement opens a window once, and active ones stay at the top of the Mods panel until they expire (`warning` ones in amber).
+
+```bash
+export ADMIN_TOKEN=<ADMIN_TOKEN>
+npm run announce -- post "Maintenance tonight" "The hub restarts at 22:00 for about 10 minutes." --warning --hours 3
+npm run announce -- list
+npm run announce -- delete <id>
+```
+
+`HUB_URL=http://localhost:8787` targets a local hub.
+
 ## Code
 
-| File                | Role                                                                     |
-| ------------------- | ------------------------------------------------------------------------ |
-| `src/index.js`      | Routes, sign-in requirement, claims                                      |
-| `src/auth.js`       | Gather ID token verification and hub sessions                            |
-| `src/accounts.js`   | Caller (session, admin, per-item token), ownership, rate limits, sign-in |
-| `src/presets.js`    | Presets validation and routes                                            |
-| `src/animations.js` | Animations validation, routes and migration from per-map storage         |
-| `src/installs.js`   | Install reports and admin stats                                          |
-| `src/versions.js`   | Required updates: running versions against the published catalog         |
-| `src/common.js`     | HTTP helpers (CORS, JSON) and validation primitives                      |
+| File                   | Role                                                                     |
+| ---------------------- | ------------------------------------------------------------------------ |
+| `src/index.js`         | Routes, sign-in requirement, claims                                      |
+| `src/auth.js`          | Gather ID token verification and hub sessions                            |
+| `src/accounts.js`      | Caller (session, admin, per-item token), ownership, rate limits, sign-in |
+| `src/presets.js`       | Presets validation and routes                                            |
+| `src/animations.js`    | Animations validation, routes and migration from per-map storage         |
+| `src/announcements.js` | Admin announcements                                                      |
+| `src/installs.js`      | Install reports and admin stats                                          |
+| `src/versions.js`      | Required updates: running versions against the published catalog         |
+| `src/common.js`        | HTTP helpers (CORS, JSON) and validation primitives                      |
 
 ## Local development
 
