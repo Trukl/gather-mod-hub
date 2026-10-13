@@ -12,17 +12,18 @@ Presets and animations created with a session belong to that Gather account (`ow
 
 ## API
 
-| Method   | Route                    | Purpose                                                                                                             |
-| -------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------- |
-| `POST`   | `/auth`                  | `{ gatherToken }` → `{ session, expiresAt }`.                                                                       |
-| `POST`   | `/auth/claim`            | With a session: `{ presets: [{ type, id, token }], animations: [{ mapId, id, token }] }` → `{ claimed: [ids] }`.    |
-| `GET`    | `/presets/:type?q=`      | List (100 max, newest first), with the full preset and `mine`. `q` filters on name, author and content.             |
-| `POST`   | `/presets/:type`         | Publishes `{ author, data }`. Answers `{ id, type }` (plus `deleteToken` when not signed in).                       |
-| `DELETE` | `/presets/:type/:id`     | Deletes, with `Bearer <owner's session \| deleteToken \| ADMIN_TOKEN>`.                                             |
-| `GET`    | `/animations/:mapId`     | Animations of a Gather map with `mine`, and the server time `now` (clients sync their clock on it).                 |
-| `POST`   | `/animations/:mapId`     | Creates `{ author, data }`, running. Answers `{ animation, now }` (plus `editToken` when not signed in).            |
-| `PATCH`  | `/animations/:mapId/:id` | `{ running }` starts (from the beginning) or stops it, with `Bearer <owner's session \| editToken \| ADMIN_TOKEN>`. |
-| `DELETE` | `/animations/:mapId/:id` | Deletes, with `Bearer <owner's session \| editToken \| ADMIN_TOKEN>`.                                               |
+| Method   | Route                          | Purpose                                                                                                                                                                                            |
+| -------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST`   | `/auth`                        | `{ gatherToken }` → `{ session, expiresAt }`.                                                                                                                                                      |
+| `POST`   | `/auth/claim`                  | With a session: `{ presets: [{ type, id, token }], animations: [{ floorId, id, token }] }` → `{ claimed: [ids] }`.                                                                                 |
+| `GET`    | `/presets/:type?q=`            | List (100 max, newest first), with the full preset and `mine`. `q` filters on name, author and content.                                                                                            |
+| `POST`   | `/presets/:type`               | Publishes `{ author, data }`. Answers `{ id, type }` (plus `deleteToken` when not signed in).                                                                                                      |
+| `DELETE` | `/presets/:type/:id`           | Deletes, with `Bearer <owner's session \| deleteToken \| ADMIN_TOKEN>`.                                                                                                                            |
+| `GET`    | `/animations/:floorId?map=`    | Animations of a Gather floor with `mine`, and the server time `now` (clients sync their clock on it). With `map`, also `legacy`: the animations still stored for that map version.                 |
+| `POST`   | `/animations/:floorId`         | Creates `{ author, data }`, running. Answers `{ animation, now }` (plus `editToken` when not signed in).                                                                                           |
+| `POST`   | `/animations/:floorId/migrate` | With a session: `{ mapId, items: [{ id, objects }] }` moves that map version's legacy animations to the floor with the given object references (the others are dropped). Answers `{ now, items }`. |
+| `PATCH`  | `/animations/:floorId/:id`     | `{ running }` starts (from the beginning) or stops it, with `Bearer <owner's session \| editToken \| ADMIN_TOKEN>`.                                                                                |
+| `DELETE` | `/animations/:floorId/:id`     | Deletes, with `Bearer <owner's session \| editToken \| ADMIN_TOKEN>`.                                                                                                                              |
 
 `type` is `outfit`, `desk` or `construction`.
 
@@ -34,7 +35,9 @@ Presets and animations created with a session belong to that Gather account (`ow
 
 ### Animation format
 
-`{ name, type, ids, point: { x, y }, params: { period, direction, amplitude, waves } }`: `type` is `orbit`, `line` or `wave`; `ids` are the animated `MapObject` UUIDs; `point` (world pixels) is the orbit center or the end point; `period` is in seconds per loop, `direction` 1 (clockwise) or -1, `amplitude` in tiles and `waves` for the wave type. The server adds `id`, `author`, `running` and `startedAt` (ms).
+`{ name, type, objects: [{ hash, variant, x, y }], point: { x, y }, params: { period, direction, amplitude, waves } }`: `type` is `orbit`, `line` or `wave`; `objects` are the animated objects as stable references: Gather's `hashIdentifier` (kept when a space admin publishes a new version of the map, while object ids change), the `CatalogItemVariant` and the position in tiles; `point` (world pixels) is the orbit center or the end point; `period` is in seconds per loop, `direction` 1 (clockwise) or -1, `amplitude` in tiles and `waves` for the wave type. The server adds `id`, `author`, `running` and `startedAt` (ms).
+
+Animations belong to a floor (`floorId`), which keeps its id across map versions. They used to be stored per map version with object ids (`a:<mapId>` keys); clients move them with `/migrate` the first time they open that map version.
 
 ### Validation and limits
 
@@ -42,10 +45,10 @@ Presets and animations created with a session belong to that Gather account (`ow
 - Desks and constructions: 200 objects max, 5 nesting levels, positions within ±100 tiles, area ≤ 50×50.
 - Request body: 64 KiB max.
 - 20 publications per hour per IP.
-- Animations: 50 per map, 100 objects each, 30 created per hour per IP; period 0.5–600 s, amplitude 0–50 tiles, waves 0.5–50.
+- Animations: 50 per floor, 100 objects each, 30 created per hour per IP; period 0.5–600 s, amplitude 0–50 tiles, waves 0.5–50.
 - The `deleteToken` and `editToken` are only stored hashed (SHA-256).
 
-Listing relies on `KV.list`: a new preset can take up to ~60 s to show up. The animations of a map are a single KV value (one read per listing); other clients can see a change up to ~60 s later.
+Listing relies on `KV.list`: a new preset can take up to ~60 s to show up. The animations of a floor are a single KV value (one read per listing); other clients can see a change up to ~60 s later.
 
 ## Deploy
 
