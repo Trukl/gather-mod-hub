@@ -34,6 +34,9 @@ const MAX_ANIMATION_OBJECTS = 100;
 const MAX_ANIMATION_COORD = 1_000_000;
 const ANIMATIONS_PER_HOUR = 30;
 const MAX_CLAIMS = 200;
+// Mods older than Community hub 1.1.0 / Fun 1.3.0 don't sign in: they are
+// served until this date, then every route but sign-in requires a session.
+const SIGN_IN_REQUIRED_FROM = Date.parse("2026-10-20T16:30:00Z");
 
 const CORS = {
   "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
@@ -197,6 +200,9 @@ async function canEdit(item, caller) {
   if (caller.accountId) return item.ownerId === caller.accountId;
   return Boolean(item.tokenHash && caller.token) && (await sha256(caller.token)) === item.tokenHash;
 }
+// Rate limits count per Gather account; per IP for clients not signed in.
+const rateLimitKey = (prefix, request, caller) =>
+  `${prefix}:${caller.accountId ? "acc:" + caller.accountId : request.headers.get("CF-Connecting-IP") || "unknown"}:${Math.floor(Date.now() / 3_600_000)}`;
 // Items created while signed in belong to the account; the others get a token.
 async function ownership(caller) {
   if (caller.accountId) return { stored: { ownerId: caller.accountId }, token: undefined };
@@ -250,8 +256,7 @@ async function listPresets(env, type, url, caller) {
 const presetMeta = ({ name, author, summary, createdAt }) => ({ name, author, summary, createdAt });
 
 async function publishPreset(env, type, request, caller) {
-  const ip = request.headers.get("CF-Connecting-IP") || "unknown";
-  const rateKey = `rl:${ip}:${Math.floor(Date.now() / 3_600_000)}`;
+  const rateKey = rateLimitKey("rl", request, caller);
   const count = Number(await env.PRESETS.get(rateKey)) || 0;
   if (count >= PUBLISH_PER_HOUR) return fail(429, "too many publishes");
 
@@ -333,8 +338,7 @@ async function migrateAnimations(env, floorId, request, caller) {
 }
 
 async function createAnimation(env, floorId, request, caller) {
-  const ip = request.headers.get("CF-Connecting-IP") || "unknown";
-  const rateKey = `rla:${ip}:${Math.floor(Date.now() / 3_600_000)}`;
+  const rateKey = rateLimitKey("rla", request, caller);
   const count = Number(await env.PRESETS.get(rateKey)) || 0;
   if (count >= ANIMATIONS_PER_HOUR) return fail(429, "too many animations");
   const body = await readBody(request);
@@ -451,6 +455,8 @@ async function route(request, env) {
     if (type === "claim") return claim(env, request, await callerOf(env, request));
   }
   const caller = await callerOf(env, request);
+  if (!caller.accountId && !caller.isAdmin && Date.now() >= SIGN_IN_REQUIRED_FROM)
+    return fail(401, "sign in required");
   if (root === "animations" && extra === undefined)
     return routeAnimations(request, env, type, id, url, caller);
   if (root !== "presets" || !TYPES.includes(type) || extra !== undefined)

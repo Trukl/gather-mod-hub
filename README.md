@@ -10,6 +10,8 @@ The mod reads Gather's Firebase ID token from the page and sends it to `POST /au
 
 Presets and animations created with a session belong to that Gather account (`ownerId`, never returned): every client of that account can delete or start/stop them, and lists flag them with `mine: true`. Items created before sign-in keep their `deleteToken`/`editToken` until `POST /auth/claim` hands them to the account.
 
+From 2026-10-20 16:30 UTC (`SIGN_IN_REQUIRED_FROM`), every route but `POST /auth` requires a session (or `ADMIN_TOKEN`): requests without one get `401 sign in required`, so only people signed in to Gather with the mod can read or publish. Until then, mods that don't sign in yet (before Community hub 1.1.0 / Fun 1.3.0) are still served.
+
 ## API
 
 | Method   | Route                          | Purpose                                                                                                                                                                                            |
@@ -44,8 +46,8 @@ Animations belong to a floor (`floorId`), which keeps its id across map versions
 - Names and author: 40 characters max; summary: 300.
 - Desks and constructions: 200 objects max, 5 nesting levels, positions within ±100 tiles, area ≤ 50×50.
 - Request body: 64 KiB max.
-- 20 publications per hour per IP.
-- Animations: 50 per floor, 100 objects each, 30 created per hour per IP; period 0.5–600 s, amplitude 0–50 tiles, waves 0.5–50.
+- 20 publications per hour per Gather account (per IP when not signed in).
+- Animations: 50 per floor, 100 objects each, 30 created per hour per Gather account (per IP when not signed in); period 0.5–600 s, amplitude 0–50 tiles, waves 0.5–50.
 - The `deleteToken` and `editToken` are only stored hashed (SHA-256).
 
 Listing relies on `KV.list`: a new preset can take up to ~60 s to show up. The animations of a floor are a single KV value (one read per listing); other clients can see a change up to ~60 s later.
