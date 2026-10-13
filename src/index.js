@@ -1,5 +1,6 @@
 // Community hub of the Gather Mod Menu: routes. See README.md for the API.
 import { callerOf, signIn } from "./accounts.js";
+import { routeAnnouncements } from "./announcements.js";
 import { claimAnimations, routeAnimations } from "./animations.js";
 import { CORS, fail, json, readBody } from "./common.js";
 import { installStats, reportInstall } from "./installs.js";
@@ -40,6 +41,8 @@ async function route(request, env) {
   const caller = await callerOf(env, request);
   if (root === "auth" && type === "claim" && id === undefined && post)
     return claim(env, request, caller);
+  if (root === "announcements" && id === undefined)
+    return routeAnnouncements(request, env, type, caller);
   if (!caller.accountId && !caller.isAdmin && Date.now() >= SIGN_IN_REQUIRED_FROM)
     return fail(401, "sign in required");
   if (root === "stats" && type === undefined && request.method === "GET")
