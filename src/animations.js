@@ -167,7 +167,9 @@ const findAnimation = async (env, floorId, id) => {
   return row && fromRow(row);
 };
 
-// PATCH { running } restarts (from the beginning) or stops; DELETE removes.
+// PATCH { running } restarts (from the beginning) or stops; PATCH { data }
+// replaces the movement (same format as on creation) and restarts it if it
+// runs; DELETE removes.
 async function editAnimation(env, floorId, id, request, caller) {
   const animation = await findAnimation(env, floorId, id);
   if (!animation) return fail(404, "not found");
@@ -177,12 +179,17 @@ async function editAnimation(env, floorId, id, request, caller) {
     return json({ ok: true });
   }
   const body = await readBody(request);
-  if (typeof body?.running !== "boolean") return fail(400, "invalid change");
-  animation.running = body.running;
-  if (body.running) animation.startedAt = Date.now();
-  const { tokenHash, ownerId, ...data } = animation;
+  const data = body?.data === undefined ? null : cleanAnimation(body.data);
+  if (body?.data !== undefined && !data) return fail(400, "invalid animation");
+  if (!data && typeof body?.running !== "boolean") return fail(400, "invalid change");
+  if (data) Object.assign(animation, data, { startedAt: Date.now() });
+  if (typeof body.running === "boolean") {
+    animation.running = body.running;
+    if (body.running) animation.startedAt = Date.now();
+  }
+  const { tokenHash, ownerId, ...stored } = animation;
   await env.DB.prepare("UPDATE animations SET data = ? WHERE id = ?")
-    .bind(JSON.stringify(data), id)
+    .bind(JSON.stringify(stored), id)
     .run();
   return json({ animation: publicAnimation(animation, caller), now: Date.now() });
 }
