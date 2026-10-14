@@ -28,7 +28,7 @@ From Core 1.4.0, the mod sends the versions of its running modules with every re
 | `GET`    | `/animations/:floorId?map=`    | Animations of a Gather floor with `mine`, and the server time `now` (clients sync their clock on it). With `map`, also `legacy`: the animations still stored for that map version.                                                                            |
 | `POST`   | `/animations/:floorId`         | Creates `{ author, data }`, running. Answers `{ animation, now }` (plus `editToken` when not signed in).                                                                                                                                                      |
 | `POST`   | `/animations/:floorId/migrate` | With a session: `{ mapId, items: [{ id, objects }] }` moves that map version's legacy animations to the floor with the given object references (the others are dropped). Answers `{ now, items }`.                                                            |
-| `PATCH`  | `/animations/:floorId/:id`     | `{ running }` starts (from the beginning) or stops it, with `Bearer <owner's session \| editToken \| ADMIN_TOKEN>`.                                                                                                                                           |
+| `PATCH`  | `/animations/:floorId/:id`     | `{ running }` starts (from the beginning) or stops it; `{ data }` replaces its name and movement (same format as on creation) and restarts it. With `Bearer <owner's session \| editToken \| ADMIN_TOKEN>`.                                                   |
 | `DELETE` | `/animations/:floorId/:id`     | Deletes, with `Bearer <owner's session \| editToken \| ADMIN_TOKEN>`.                                                                                                                                                                                         |
 | `POST`   | `/installs`                    | `{ gatherToken, installId, launcher, versions: { core: "1.3.0", … } }`: the mod's core reports its installed module versions on first install and after each update. The Gather token is verified like `/auth`; only the account id is kept, with the report. |
 | `GET`    | `/stats`                       | With `ADMIN_TOKEN`: `{ installs, accounts, launcher, updatedLast30Days, modules: { id: { version: count } }, items }`.                                                                                                                                        |
@@ -79,7 +79,7 @@ Owned rows have `owner_id` (Gather account) or `token_hash` (created before sign
 
 ## Deploy
 
-Every push to `main` that touches `src/`, `wrangler.toml` or the npm files is deployed by the `Deploy hub` GitHub workflow (`.github/workflows/deploy.yml`); run it by hand from the Actions tab if needed. It needs a `CLOUDFLARE_API_TOKEN` repository secret: a Cloudflare API token from the “Edit Cloudflare Workers” template, limited to this account.
+Every push to `main` that touches `src/`, `migrations/`, `wrangler.toml` or the npm files is deployed by the `Deploy hub` GitHub workflow (`.github/workflows/deploy.yml`), which applies the D1 migrations first; run it by hand from the Actions tab if needed. It needs a `CLOUDFLARE_API_TOKEN` repository secret: a Cloudflare API token from the “Edit Cloudflare Workers” template plus the **D1 Edit** permission, limited to this account.
 
 ```bash
 gh secret set CLOUDFLARE_API_TOKEN --repo Trukl/gather-mod-hub
