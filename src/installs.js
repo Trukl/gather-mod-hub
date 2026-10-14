@@ -3,23 +3,15 @@
 // token (verified, only the account id is kept). Admins read the totals.
 import { withinRateLimit } from "./accounts.js";
 import { verifyGatherToken } from "./auth.js";
-import { fail, json, readBody, UUID_RE } from "./common.js";
+import { cleanModuleVersions, fail, json, readBody, UUID_RE } from "./common.js";
 
-const MODULE_ID_RE = /^[a-z][a-z0-9-]{0,30}$/;
-const VERSION_RE = /^\d{1,4}\.\d{1,4}\.\d{1,4}$/;
-const MAX_MODULES = 40;
 const REPORTS_PER_HOUR = 30;
 const ACTIVE_DAYS = 30;
 const DAY_MS = 86_400_000;
 
 function cleanVersions(versions) {
-  if (!versions || typeof versions !== "object" || Array.isArray(versions)) return null;
-  const entries = Object.entries(versions);
-  if (!entries.length || entries.length > MAX_MODULES || !versions.core) return null;
-  const valid = entries.every(
-    ([id, v]) => MODULE_ID_RE.test(id) && typeof v === "string" && VERSION_RE.test(v),
-  );
-  return valid ? Object.fromEntries(entries) : null;
+  const clean = cleanModuleVersions(versions);
+  return clean?.core ? clean : null;
 }
 
 export async function reportInstall(env, request) {
