@@ -24,6 +24,7 @@ const MAX_TILES = 30;
 const MAX_COORD = 1_000_000;
 const MAX_IMAGE_BYTES = 512 * 1024;
 const LAYERS = ["floor", "sorted", "above"];
+const PLANE_RELATIONS = ["front", "behind"];
 const HUB_IMAGE_RE = /^\/images\/\d{13}[0-9a-f]{8}$/;
 // The first bytes of each accepted format, so nothing else is ever served.
 const IMAGE_TYPES = {
@@ -54,14 +55,26 @@ function cleanImageUrl(url) {
   }
 }
 
+// Draw order chosen by the user: just in front of or just behind a real
+// object (a stable reference). Without it, the layer or the restyled object
+// decides.
+function cleanPlane(p) {
+  if (p === undefined) return {};
+  const object = cleanRef(p?.object);
+  return PLANE_RELATIONS.includes(p?.relation) && object
+    ? { plane: { relation: p.relation, object } }
+    : null;
+}
+
 // Free objects are placed in tiles: top-left corner, size, layer (under
 // everything, sorted with avatars and objects by the `base` line, or above
 // everything), and whether the tiles under the base line block avatars.
 function cleanCustomObject(o) {
   const name = cleanText(o?.name, MAX_NAME);
   const imageUrl = cleanImageUrl(o?.imageUrl);
-  if (!name || !imageUrl || !inRange(o.opacity, 0.1, 1)) return null;
-  const common = { name, imageUrl, opacity: o.opacity };
+  const plane = cleanPlane(o?.plane);
+  if (!name || !imageUrl || !plane || !inRange(o.opacity, 0.1, 1)) return null;
+  const common = { name, imageUrl, opacity: o.opacity, ...plane };
   if (o.mode === "skin") {
     const object = cleanRef(o.skin?.object);
     return object ? { ...common, mode: "skin", skin: { object } } : null;
@@ -137,7 +150,7 @@ async function editObject(env, floorId, id, request, caller) {
   const body = await readBody(request);
   const data = cleanCustomObject(body?.data);
   if (!data) return fail(400, "invalid custom object");
-  const { ownerId, tokenHash, free, skin, ...kept } = object;
+  const { ownerId, tokenHash, free, skin, plane, ...kept } = object;
   const updated = { ...kept, ...data };
   await env.DB.prepare("UPDATE custom_objects SET data = ? WHERE id = ?")
     .bind(JSON.stringify(updated), id)
