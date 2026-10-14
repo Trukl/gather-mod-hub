@@ -1,6 +1,18 @@
-// Announcements: messages from the hub admin (maintenance, incident…) that the
-// mod shows once in a window, then in its panel until they expire.
-import { cleanText, fail, ID_RE, inRange, json, newId, readBody } from "./common.js";
+// Announcements: messages from the hub admin (maintenance, incident, new
+// feature) that the mod shows once in a window, then in its panel until they
+// expire. One with `outdated` only goes to mods running one of those modules
+// below the given version; the admin sees them all.
+import {
+  cleanModuleVersions,
+  cleanText,
+  fail,
+  ID_RE,
+  inRange,
+  json,
+  newId,
+  readBody,
+} from "./common.js";
+import { isNewerVersion, runningVersions } from "./versions.js";
 
 const LEVELS = ["info", "warning"];
 const MAX_TITLE = 60;
@@ -9,16 +21,36 @@ const DEFAULT_HOURS = 24;
 const MAX_HOURS = 30 * 24;
 const HOUR_MS = 3_600_000;
 
+function isFor(announcement, running) {
+  if (!announcement.outdated) return true;
+  return Object.entries(announcement.outdated).some(([module, version]) => {
+    const current = running?.get(module);
+    return current && isNewerVersion(version, current);
+  });
+}
+
 export async function routeAnnouncements(request, env, id, caller) {
   const now = new Date().toISOString();
   if (request.method === "GET" && id === undefined) {
     const { results } = await env.DB.prepare(
-      `SELECT id, title, message, level, created_at AS createdAt, expires_at AS expiresAt
+      `SELECT id, title, message, level, created_at, expires_at, outdated
        FROM announcements WHERE expires_at > ? ORDER BY id`,
     )
       .bind(now)
       .all();
-    return json({ announcements: results });
+    const running = runningVersions(request);
+    const announcements = results
+      .map((a) => ({
+        id: a.id,
+        title: a.title,
+        message: a.message,
+        level: a.level,
+        createdAt: a.created_at,
+        expiresAt: a.expires_at,
+        ...(a.outdated && { outdated: JSON.parse(a.outdated) }),
+      }))
+      .filter((a) => caller.isAdmin || isFor(a, running));
+    return json({ announcements });
   }
   if (!caller.isAdmin) return fail(403, "forbidden");
   if (request.method === "POST" && id === undefined) {
@@ -27,7 +59,14 @@ export async function routeAnnouncements(request, env, id, caller) {
     const message = cleanText(body?.message, MAX_MESSAGE);
     const level = body?.level ?? "info";
     const hours = body?.hours ?? DEFAULT_HOURS;
-    if (!title || !message || !LEVELS.includes(level) || !inRange(hours, 0.05, MAX_HOURS))
+    const outdated = body?.outdated === undefined ? null : cleanModuleVersions(body.outdated);
+    if (
+      !title ||
+      !message ||
+      !LEVELS.includes(level) ||
+      !inRange(hours, 0.05, MAX_HOURS) ||
+      (body.outdated !== undefined && !outdated)
+    )
       return fail(400, "invalid announcement");
     const announcement = {
       id: newId(),
@@ -36,13 +75,22 @@ export async function routeAnnouncements(request, env, id, caller) {
       level,
       createdAt: now,
       expiresAt: new Date(Date.parse(now) + hours * HOUR_MS).toISOString(),
+      ...(outdated && { outdated }),
     };
     const { createdAt, expiresAt } = announcement;
     await env.DB.prepare(
-      `INSERT INTO announcements (id, title, message, level, created_at, expires_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO announcements (id, title, message, level, created_at, expires_at, outdated)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
-      .bind(announcement.id, title, message, level, createdAt, expiresAt)
+      .bind(
+        announcement.id,
+        title,
+        message,
+        level,
+        createdAt,
+        expiresAt,
+        outdated && JSON.stringify(outdated),
+      )
       .run();
     return json({ announcement });
   }

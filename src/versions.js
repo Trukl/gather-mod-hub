@@ -11,7 +11,7 @@ const CATALOG_KEY = "catalog:latest";
 const CATALOG_CACHE_S = 300;
 
 const parseVersion = (v) => v.split(".").map((n) => Number(n) || 0);
-function isNewerVersion(candidate, current) {
+export function isNewerVersion(candidate, current) {
   const a = parseVersion(candidate);
   const b = parseVersion(current);
   for (let i = 0; i < Math.max(a.length, b.length); i++)
@@ -19,10 +19,15 @@ function isNewerVersion(candidate, current) {
   return false;
 }
 
-export async function updateRequired(env, request) {
+// Module id → version of the caller's running modules, null without the header.
+export function runningVersions(request) {
   const header = request.headers.get(VERSIONS_HEADER);
-  if (!header) return null;
-  const running = new Map(header.split(",").map((pair) => pair.trim().split("=")));
+  return header ? new Map(header.split(",").map((pair) => pair.trim().split("="))) : null;
+}
+
+export async function updateRequired(env, request) {
+  const running = runningVersions(request);
+  if (!running) return null;
   const release = await env.RELEASES.get(CATALOG_KEY, { type: "json", cacheTtl: CATALOG_CACHE_S });
   if (!release) return null;
   const modules = JSON.parse(release.manifest)

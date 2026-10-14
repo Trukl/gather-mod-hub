@@ -6,6 +6,20 @@ export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 // Item ids sort newest first: reversed timestamp, then random hex.
 export const ID_RE = /^\d{13}[0-9a-f]{8}$/;
 export const MAX_NAME = 40;
+const MODULE_ID_RE = /^[a-z][a-z0-9-]{0,30}$/;
+const VERSION_RE = /^\d{1,4}\.\d{1,4}\.\d{1,4}$/;
+const MAX_MODULES = 40;
+
+// `{ moduleId: "x.y.z" }` with 1 to 40 entries, null when invalid.
+export function cleanModuleVersions(versions) {
+  if (!versions || typeof versions !== "object" || Array.isArray(versions)) return null;
+  const entries = Object.entries(versions);
+  if (!entries.length || entries.length > MAX_MODULES) return null;
+  const valid = entries.every(
+    ([id, v]) => MODULE_ID_RE.test(id) && typeof v === "string" && VERSION_RE.test(v),
+  );
+  return valid ? Object.fromEntries(entries) : null;
+}
 
 export const CORS = {
   "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
