@@ -31,30 +31,28 @@ export async function reportInstall(env, request) {
   if (!accountId) return fail(401, "invalid Gather token");
   if (!(await withinRateLimit(env, "rli", REPORTS_PER_HOUR, request, { accountId })))
     return fail(429, "too many reports");
-  const key = `i:${body.installId}`;
-  const previous = await env.PRESETS.get(key, "json");
   const now = new Date().toISOString();
-  const install = {
-    accountId,
-    launcher: body.launcher,
-    versions,
-    firstSeen: previous?.firstSeen ?? now,
-    updatedAt: now,
-  };
-  // Kept in the key's metadata so the stats only list keys, without reading them.
-  await env.PRESETS.put(key, JSON.stringify(install), { metadata: install });
+  await env.DB.prepare(
+    `INSERT INTO installs (install_id, account_id, launcher, versions, first_seen, updated_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+     ON CONFLICT (install_id) DO UPDATE SET account_id = excluded.account_id,
+       launcher = excluded.launcher, versions = excluded.versions, updated_at = excluded.updated_at`,
+  )
+    .bind(body.installId, accountId, body.launcher ? 1 : 0, JSON.stringify(versions), now)
+    .run();
   return json({ ok: true });
 }
 
 export async function installStats(env) {
-  const installs = [];
-  let cursor;
-  do {
-    const page = await env.PRESETS.list({ prefix: "i:", cursor });
-    for (const key of page.keys)
-      if (key.metadata) installs.push({ installId: key.name.slice(2), ...key.metadata });
-    cursor = page.list_complete ? undefined : page.cursor;
-  } while (cursor);
+  const { results } = await env.DB.prepare("SELECT * FROM installs ORDER BY updated_at DESC").all();
+  const installs = results.map((i) => ({
+    installId: i.install_id,
+    accountId: i.account_id,
+    launcher: i.launcher === 1,
+    versions: JSON.parse(i.versions),
+    firstSeen: i.first_seen,
+    updatedAt: i.updated_at,
+  }));
   const modules = {};
   for (const { versions } of installs)
     for (const [id, version] of Object.entries(versions)) {
@@ -68,6 +66,6 @@ export async function installStats(env) {
     launcher: installs.filter((i) => i.launcher).length,
     updatedLast30Days: installs.filter((i) => Date.parse(i.updatedAt) >= activeSince).length,
     modules,
-    items: installs.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+    items: installs,
   });
 }
