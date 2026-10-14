@@ -1,5 +1,5 @@
 // Shared presets: outfits, desks and constructions.
-import { canEdit, handOver, isMine, ownership, withinRateLimit } from "./accounts.js";
+import { canEdit, handOver, isMine, ownerOf, ownership, withinRateLimit } from "./accounts.js";
 import { cleanText, fail, ID_RE, json, MAX_NAME, newId, readBody, UUID_RE } from "./common.js";
 
 export const TYPES = ["outfit", "desk", "construction"];
@@ -80,38 +80,29 @@ function cleanConstruction(p) {
 const CLEANERS = { outfit: cleanOutfit, desk: cleanDesk, construction: cleanConstruction };
 const summaryOf = (type, preset) =>
   type === "outfit" ? preset.summary : preset.items.map((i) => i.name).join(", ");
-// The listing reads names and authors from the key metadata, without loading presets.
-const presetMeta = ({ name, author, summary, createdAt }) => ({ name, author, summary, createdAt });
-const presetKey = (type, id) => `p:${type}:${id}`;
-
-async function matchingKeys(env, type, q) {
-  const keys = [];
-  let cursor;
-  do {
-    const page = await env.PRESETS.list({ prefix: presetKey(type, ""), cursor });
-    for (const key of page.keys) {
-      const meta = key.metadata;
-      if (!meta) continue;
-      if (q && !`${meta.name} ${meta.author} ${meta.summary}`.toLowerCase().includes(q)) continue;
-      keys.push(key);
-      if (keys.length >= LIST_LIMIT) return keys;
-    }
-    cursor = page.list_complete ? undefined : page.cursor;
-  } while (cursor);
-  return keys;
-}
+export const presetSearch = ({ name, author, summary }) =>
+  `${name} ${author} ${summary}`.toLowerCase();
 
 async function listPresets(env, type, url, caller) {
   const q = (url.searchParams.get("q") || "").trim().toLowerCase();
-  const items = await Promise.all(
-    (await matchingKeys(env, type, q)).map(async (key) => {
-      const stored = await env.PRESETS.get(key.name, "json");
-      if (!stored) return null;
-      const id = key.name.slice(presetKey(type, "").length);
-      return { id, type, ...key.metadata, data: stored.data, mine: isMine(stored, caller) };
-    }),
-  );
-  return json({ items: items.filter(Boolean) });
+  const { results } = await env.DB.prepare(
+    `SELECT id, name, author, summary, created_at, data, owner_id FROM presets
+     WHERE type = ?1 AND instr(search, ?2) > 0 ORDER BY id LIMIT ?3`,
+  )
+    .bind(type, q, LIST_LIMIT)
+    .all();
+  return json({
+    items: results.map((p) => ({
+      id: p.id,
+      type,
+      name: p.name,
+      author: p.author,
+      summary: p.summary,
+      createdAt: p.created_at,
+      data: JSON.parse(p.data),
+      mine: isMine(ownerOf(p), caller),
+    })),
+  });
 }
 
 async function publishPreset(env, type, request, caller) {
@@ -126,21 +117,38 @@ async function publishPreset(env, type, request, caller) {
     name: data.name,
     author: cleanText(body.author, MAX_NAME) || "anonymous",
     summary: summaryOf(type, data).slice(0, MAX_META_SUMMARY),
-    createdAt: new Date().toISOString(),
   };
   const { stored, token } = await ownership(caller);
-  await env.PRESETS.put(presetKey(type, id), JSON.stringify({ ...meta, data, ...stored }), {
-    metadata: meta,
-  });
+  await env.DB.prepare(
+    `INSERT INTO presets (id, type, name, author, summary, search, created_at, data, owner_id, token_hash)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(
+      id,
+      type,
+      meta.name,
+      meta.author,
+      meta.summary,
+      presetSearch(meta),
+      new Date().toISOString(),
+      JSON.stringify(data),
+      stored.ownerId ?? null,
+      stored.tokenHash ?? null,
+    )
+    .run();
   return json({ id, type, deleteToken: token }, 201);
 }
 
+const findPreset = (env, type, id) =>
+  env.DB.prepare("SELECT owner_id, token_hash FROM presets WHERE type = ? AND id = ?")
+    .bind(type, id)
+    .first();
+
 async function deletePreset(env, type, id, caller) {
-  const key = presetKey(type, id);
-  const stored = await env.PRESETS.get(key, "json");
-  if (!stored) return fail(404, "not found");
-  if (!(await canEdit(stored, caller))) return fail(403, "forbidden");
-  await env.PRESETS.delete(key);
+  const row = await findPreset(env, type, id);
+  if (!row) return fail(404, "not found");
+  if (!(await canEdit(ownerOf(row), caller))) return fail(403, "forbidden");
+  await env.DB.prepare("DELETE FROM presets WHERE id = ?").bind(id).run();
   return json({ ok: true });
 }
 
@@ -149,11 +157,12 @@ export async function claimPresets(env, claims, caller) {
   const claimed = [];
   for (const { type, id, token } of claims) {
     if (!TYPES.includes(type) || !ID_RE.test(id || "")) continue;
-    const key = presetKey(type, id);
-    const stored = await env.PRESETS.get(key, "json");
-    const owned = stored && (await handOver(stored, token, caller));
+    const row = await findPreset(env, type, id);
+    const owned = row && (await handOver(ownerOf(row), token, caller));
     if (!owned) continue;
-    await env.PRESETS.put(key, JSON.stringify(owned), { metadata: presetMeta(owned) });
+    await env.DB.prepare("UPDATE presets SET owner_id = ?, token_hash = NULL WHERE id = ?")
+      .bind(owned.ownerId, id)
+      .run();
     claimed.push(id);
   }
   return claimed;

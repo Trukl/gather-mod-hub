@@ -2,9 +2,11 @@ name = "gather-mods-hub"
 main = "src/index.js"
 compatibility_date = "2026-10-01"
 
-[[kv_namespaces]]
-binding = "PRESETS"
-id = "ecb47a392e434508af32023291cc2651"
+[[d1_databases]]
+binding = "DB"
+database_name = "gather-mods-hub"
+database_id = "b745f050-4b8c-456f-9fdf-b8710a7cf5d8"
+migrations_dir = "migrations"
 
 # Published catalog of the mod, read for the minimum module versions.
 [[kv_namespaces]]

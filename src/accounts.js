@@ -46,15 +46,25 @@ export async function handOver(item, token, caller) {
   return { ...rest, ownerId: caller.accountId };
 }
 
+// Owner columns of a stored row, in the shape the helpers above expect.
+export const ownerOf = (row) => ({
+  ownerId: row.owner_id ?? undefined,
+  tokenHash: row.token_hash ?? undefined,
+});
+
 // Counts one write for the hour; false once the limit is reached. Per Gather
-// account, or per IP for clients not signed in.
+// account, or per IP for clients not signed in. Past hours are dropped.
 export async function withinRateLimit(env, prefix, limit, request, caller) {
   const who = caller.accountId
     ? "acc:" + caller.accountId
     : request.headers.get("CF-Connecting-IP") || "unknown";
-  const key = `${prefix}:${who}:${Math.floor(Date.now() / 3_600_000)}`;
-  const count = Number(await env.PRESETS.get(key)) || 0;
-  if (count >= limit) return false;
-  await env.PRESETS.put(key, String(count + 1), { expirationTtl: 3600 });
-  return true;
+  const hour = Math.floor(Date.now() / 3_600_000);
+  const [, counted] = await env.DB.batch([
+    env.DB.prepare("DELETE FROM rate_limits WHERE hour < ?").bind(hour),
+    env.DB.prepare(
+      `INSERT INTO rate_limits (key, hour, count) VALUES (?1, ?2, 1)
+       ON CONFLICT (key, hour) DO UPDATE SET count = count + 1 RETURNING count`,
+    ).bind(`${prefix}:${who}`, hour),
+  ]);
+  return counted.results[0].count <= limit;
 }

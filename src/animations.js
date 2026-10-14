@@ -1,5 +1,5 @@
 // Object animations, per Gather floor.
-import { canEdit, handOver, isMine, ownership, withinRateLimit } from "./accounts.js";
+import { canEdit, handOver, isMine, ownerOf, ownership, withinRateLimit } from "./accounts.js";
 import {
   cleanText,
   fail,
@@ -60,31 +60,56 @@ function cleanAnimation(a) {
   };
 }
 
-// All animations of a floor live in one key: listing them costs a single read.
-// The floor survives new versions of its map, whose id changes.
-const animationsKey = (floorId) => `af:${floorId}`;
-// Before stable references, animations were stored per map version, with object ids.
-const legacyAnimationsKey = (mapId) => `a:${mapId}`;
+// One row per animation, on its floor: the floor survives new versions of its
+// map, whose id changes. Rows are listed in insertion order.
+const fromRow = (row) => ({ ...JSON.parse(row.data), ...ownerOf(row) });
 const readAnimations = async (env, floorId) =>
-  (await env.PRESETS.get(animationsKey(floorId), "json")) ?? [];
-const writeAnimations = (env, floorId, items) =>
-  env.PRESETS.put(animationsKey(floorId), JSON.stringify(items));
+  (
+    await env.DB.prepare(
+      "SELECT data, owner_id, token_hash FROM animations WHERE floor_id = ? ORDER BY rowid",
+    )
+      .bind(floorId)
+      .all()
+  ).results.map(fromRow);
+// Inserts unless the floor is full or the id exists; meta.changes tells which.
+function insertAnimation(env, floorId, { ownerId, tokenHash, ...animation }) {
+  return env.DB.prepare(
+    `INSERT OR IGNORE INTO animations (id, floor_id, data, owner_id, token_hash)
+     SELECT ?1, ?2, ?3, ?4, ?5
+     WHERE (SELECT count(*) FROM animations WHERE floor_id = ?2) < ?6`,
+  ).bind(
+    animation.id,
+    floorId,
+    JSON.stringify(animation),
+    ownerId ?? null,
+    tokenHash ?? null,
+    MAX_ANIMATIONS_PER_FLOOR,
+  );
+}
 const publicAnimation = ({ tokenHash, ownerId, ...a }, caller) => ({
   ...a,
   mine: isMine({ ownerId }, caller),
 });
 
+// Before stable references, animations were stored per map version, with object ids.
+const readLegacy = async (env, mapId) =>
+  JSON.parse(
+    (
+      await env.DB.prepare("SELECT items FROM legacy_animations WHERE map_id = ?")
+        .bind(mapId)
+        .first()
+    )?.items ?? "[]",
+  );
+
 // `?map=` adds the legacy animations of that map version, for the client to migrate.
 async function listAnimations(env, floorId, url, caller) {
   const items = await readAnimations(env, floorId);
   const mapId = url.searchParams.get("map");
-  const legacy = UUID_RE.test(mapId || "")
-    ? await env.PRESETS.get(legacyAnimationsKey(mapId), "json")
-    : null;
+  const legacy = UUID_RE.test(mapId || "") ? await readLegacy(env, mapId) : [];
   return json({
     now: Date.now(),
     items: items.map((a) => publicAnimation(a, caller)),
-    ...(legacy?.length && { legacy: legacy.map((a) => publicAnimation(a, caller)) }),
+    ...(legacy.length && { legacy: legacy.map((a) => publicAnimation(a, caller)) }),
   });
 }
 
@@ -94,19 +119,19 @@ async function migrateAnimations(env, floorId, request, caller) {
   if (!caller.accountId) return fail(401, "sign in required");
   const body = await readBody(request);
   if (!UUID_RE.test(body?.mapId || "")) return fail(400, "invalid map");
-  const legacy = (await env.PRESETS.get(legacyAnimationsKey(body.mapId), "json")) ?? [];
   const refs = new Map(
     (Array.isArray(body.items) ? body.items : []).map((i) => [i?.id, i?.objects]),
   );
-  const items = await readAnimations(env, floorId);
-  const known = new Set(items.map((a) => a.id));
-  for (const { ids, ...animation } of legacy) {
+  const inserts = [];
+  for (const { ids, ...animation } of await readLegacy(env, body.mapId)) {
     const objects = cleanObjectRefs(refs.get(animation.id));
-    if (!objects || known.has(animation.id) || items.length >= MAX_ANIMATIONS_PER_FLOOR) continue;
-    items.push({ ...animation, objects });
+    if (objects) inserts.push(insertAnimation(env, floorId, { ...animation, objects }));
   }
-  await writeAnimations(env, floorId, items);
-  await env.PRESETS.delete(legacyAnimationsKey(body.mapId));
+  await env.DB.batch([
+    ...inserts,
+    env.DB.prepare("DELETE FROM legacy_animations WHERE map_id = ?").bind(body.mapId),
+  ]);
+  const items = await readAnimations(env, floorId);
   return json({ now: Date.now(), items: items.map((a) => publicAnimation(a, caller)) });
 }
 
@@ -116,9 +141,6 @@ async function createAnimation(env, floorId, request, caller) {
   const body = await readBody(request);
   const data = cleanAnimation(body?.data);
   if (!data) return fail(400, "invalid animation");
-  const items = await readAnimations(env, floorId);
-  if (items.length >= MAX_ANIMATIONS_PER_FLOOR)
-    return fail(409, "too many animations on this floor");
   const { stored, token } = await ownership(caller);
   const animation = {
     id: newId(),
@@ -128,32 +150,40 @@ async function createAnimation(env, floorId, request, caller) {
     startedAt: Date.now(),
     ...stored,
   };
-  await writeAnimations(env, floorId, [...items, animation]);
+  const { meta } = await insertAnimation(env, floorId, animation).run();
+  if (!meta.changes) return fail(409, "too many animations on this floor");
   return json(
     { animation: publicAnimation(animation, caller), editToken: token, now: Date.now() },
     201,
   );
 }
 
+const findAnimation = async (env, floorId, id) => {
+  const row = await env.DB.prepare(
+    "SELECT data, owner_id, token_hash FROM animations WHERE floor_id = ? AND id = ?",
+  )
+    .bind(floorId, id)
+    .first();
+  return row && fromRow(row);
+};
+
 // PATCH { running } restarts (from the beginning) or stops; DELETE removes.
 async function editAnimation(env, floorId, id, request, caller) {
-  const items = await readAnimations(env, floorId);
-  const animation = items.find((a) => a.id === id);
+  const animation = await findAnimation(env, floorId, id);
   if (!animation) return fail(404, "not found");
   if (!(await canEdit(animation, caller))) return fail(403, "forbidden");
   if (request.method === "DELETE") {
-    await writeAnimations(
-      env,
-      floorId,
-      items.filter((a) => a !== animation),
-    );
+    await env.DB.prepare("DELETE FROM animations WHERE id = ?").bind(id).run();
     return json({ ok: true });
   }
   const body = await readBody(request);
   if (typeof body?.running !== "boolean") return fail(400, "invalid change");
   animation.running = body.running;
   if (body.running) animation.startedAt = Date.now();
-  await writeAnimations(env, floorId, items);
+  const { tokenHash, ownerId, ...data } = animation;
+  await env.DB.prepare("UPDATE animations SET data = ? WHERE id = ?")
+    .bind(JSON.stringify(data), id)
+    .run();
   return json({ animation: publicAnimation(animation, caller), now: Date.now() });
 }
 
@@ -161,17 +191,14 @@ async function editAnimation(env, floorId, id, request, caller) {
 export async function claimAnimations(env, claims, caller) {
   const claimed = [];
   const valid = claims.filter((a) => UUID_RE.test(a?.floorId || "") && ID_RE.test(a.id || ""));
-  for (const [floorId, floorClaims] of Map.groupBy(valid, (a) => a.floorId)) {
-    const items = await readAnimations(env, floorId);
-    const before = claimed.length;
-    for (const [i, item] of items.entries()) {
-      const match = floorClaims.find((c) => c.id === item.id);
-      const owned = match && (await handOver(item, match.token, caller));
-      if (!owned) continue;
-      items[i] = owned;
-      claimed.push(item.id);
-    }
-    if (claimed.length > before) await writeAnimations(env, floorId, items);
+  for (const { floorId, id, token } of valid) {
+    const animation = await findAnimation(env, floorId, id);
+    const owned = animation && (await handOver(animation, token, caller));
+    if (!owned) continue;
+    await env.DB.prepare("UPDATE animations SET owner_id = ?, token_hash = NULL WHERE id = ?")
+      .bind(owned.ownerId, id)
+      .run();
+    claimed.push(id);
   }
   return claimed;
 }

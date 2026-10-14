@@ -1,6 +1,6 @@
 # Gather Mod Hub
 
-API of the **community hub** of the [Gather Mod Menu](https://github.com/Trukl/gather-mod-menu): stores and shares outfit, desk and construction presets, and the object animations of each map. Cloudflare Worker + KV, deployed at `https://gather-mods-hub.minnecorentin.workers.dev`.
+API of the **community hub** of the [Gather Mod Menu](https://github.com/Trukl/gather-mod-menu): stores and shares outfit, desk and construction presets, and the object animations of each map. Cloudflare Worker + D1 (SQLite), deployed at `https://gather-mods-hub.minnecorentin.workers.dev`.
 
 CORS only allows the `https://app.v2.gather.town` origin.
 
@@ -48,7 +48,7 @@ From Core 1.4.0, the mod sends the versions of its running modules with every re
 
 `{ name, type, objects: [{ hash, variant, x, y }], point: { x, y }, params: { period, direction, amplitude, waves } }`: `type` is `orbit`, `line` or `wave`; `objects` are the animated objects as stable references: Gather's `hashIdentifier` (kept when a space admin publishes a new version of the map, while object ids change), the `CatalogItemVariant` and the position in tiles; `point` (world pixels) is the orbit center or the end point; `period` is in seconds per loop, `direction` 1 (clockwise) or -1, `amplitude` in tiles and `waves` for the wave type. The server adds `id`, `author`, `running` and `startedAt` (ms).
 
-Animations belong to a floor (`floorId`), which keeps its id across map versions. They used to be stored per map version with object ids (`a:<mapId>` keys); clients move them with `/migrate` the first time they open that map version.
+Animations belong to a floor (`floorId`), which keeps its id across map versions. They used to be stored per map version with object ids (table `legacy_animations`); clients move them with `/migrate` the first time they open that map version.
 
 ### Validation and limits
 
@@ -60,7 +60,22 @@ Animations belong to a floor (`floorId`), which keeps its id across map versions
 - 30 install reports per hour per Gather account.
 - The `deleteToken` and `editToken` are only stored hashed (SHA-256).
 
-Listing relies on `KV.list`: a new preset can take up to ~60 s to show up. The animations of a floor are a single KV value (one read per listing); other clients can see a change up to ~60 s later.
+A floor holds at most 50 animations, checked in the same statement as the insert.
+
+## Storage
+
+One D1 database, `gather-mods-hub`, whose schema lives in `migrations/` (applied by the deploy workflow before each deploy). Writes are visible to every client right away.
+
+| Table               | Rows                                                                                                      |
+| ------------------- | --------------------------------------------------------------------------------------------------------- |
+| `presets`           | One per shared preset: name, author, summary, lower-case `search` text, `data` (JSON), owner              |
+| `animations`        | One per animation, with its `floor_id`; `data` is the animation as clients get it; listed in insert order |
+| `legacy_animations` | Animations still stored per map version, until a client migrates them                                     |
+| `installs`          | One per mod install: account, launcher, module versions, first and last report                            |
+| `announcements`     | Admin announcements; expired ones are not listed                                                          |
+| `rate_limits`       | Writes per hour, per action and caller; past hours are dropped on the next write                          |
+
+Owned rows have `owner_id` (Gather account) or `token_hash` (created before sign-in); neither is returned. Until October 2026 the hub stored everything in the `PRESETS` KV namespace; `scripts/migrate-kv-to-d1.mjs` copied it into D1.
 
 ## Deploy
 
@@ -80,7 +95,7 @@ npm run deploy
 
 Deploys never touch the worker's secrets (`SESSION_SECRET`, `ADMIN_TOKEN`).
 
-The `PRESETS` KV namespace and the mod's `RELEASES` namespace (read only, for required updates) are set in `wrangler.toml`. Sessions are signed with a secret:
+The D1 database and the mod's `RELEASES` KV namespace (read only, for required updates) are set in `wrangler.toml`. Sessions are signed with a secret:
 
 ```bash
 openssl rand -base64 32 | npx wrangler secret put SESSION_SECRET
@@ -130,9 +145,11 @@ npm run announce -- delete <id>
 | `src/installs.js`      | Install reports and admin stats                                          |
 | `src/versions.js`      | Required updates: running versions against the published catalog         |
 | `src/common.js`        | HTTP helpers (CORS, JSON) and validation primitives                      |
+| `migrations/`          | D1 schema                                                                |
 
 ## Local development
 
 ```bash
-npm run dev   # http://localhost:8787, local KV in .wrangler/, secrets in .dev.vars (SESSION_SECRET=...)
+npx wrangler d1 migrations apply gather-mods-hub --local   # once, then after each new migration
+npm run dev   # http://localhost:8787, local D1 in .wrangler/, secrets in .dev.vars (SESSION_SECRET=...)
 ```
