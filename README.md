@@ -35,6 +35,13 @@ From Core 1.4.0, the mod sends the versions of its running modules with every re
 | `GET`    | `/announcements`               | Active announcements, without session: `{ announcements: [{ id, title, message, level, createdAt, expiresAt, outdated? }] }`. One with `outdated` is only listed for mods whose `X-Gather-Mods` header shows one of those modules below that version (all of them for `ADMIN_TOKEN`). |
 | `POST`   | `/announcements`               | With `ADMIN_TOKEN`: `{ title, message, level: "info" \| "warning", hours, outdated? }` (title 60 and message 500 characters max, 24 hours by default, 30 days max; `outdated`: `{ moduleId: "x.y.z" }`). Answers `{ announcement }`.                                                  |
 | `DELETE` | `/announcements/:id`           | With `ADMIN_TOKEN`: removes it before it expires.                                                                                                                                                                                                                                     |
+| `GET`    | `/objects/:floorId`            | Custom objects of a Gather floor, in creation order, with `mine`.                                                                                                                                                                                                                     |
+| `POST`   | `/objects/:floorId`            | With a session: creates `{ author, data }`. Answers `{ object }`.                                                                                                                                                                                                                     |
+| `PATCH`  | `/objects/:floorId/:id`        | `{ data }` replaces it, with `Bearer <owner's session \| ADMIN_TOKEN>`.                                                                                                                                                                                                               |
+| `DELETE` | `/objects/:floorId/:id`        | Deletes, with `Bearer <owner's session \| ADMIN_TOKEN>`.                                                                                                                                                                                                                              |
+| `POST`   | `/images`                      | With a session: the raw image (`Content-Type` `image/png`, `jpeg`, `gif` or `webp`, 512 KB max). Answers `{ url: "/images/:id" }`.                                                                                                                                                    |
+| `GET`    | `/images/:id`                  | The image, public and cached for a year (its id never changes).                                                                                                                                                                                                                       |
+| `DELETE` | `/images/:id`                  | With `Bearer <owner's session \| ADMIN_TOKEN>`.                                                                                                                                                                                                                                       |
 
 `type` is `outfit`, `desk` or `construction`.
 
@@ -50,6 +57,10 @@ From Core 1.4.0, the mod sends the versions of its running modules with every re
 
 Animations belong to a floor (`floorId`), which keeps its id across map versions. They used to be stored per map version with object ids (table `legacy_animations`); clients move them with `/migrate` the first time they open that map version.
 
+### Custom object format
+
+`{ name, imageUrl, opacity, mode, free?, skin? }`: `imageUrl` is an `https` URL or an image of this hub (`/images/:id`); `opacity` 0.1–1. `mode: "skin"` draws the image over a real object, `skin: { object: { hash, variant, x, y } }` (a stable reference, as for animations). `mode: "free"` places it alone, `free: { x, y, width, height, layer, base, collision }`: top-left corner and size in tiles (0.25–30), `layer` `floor` (under avatars and objects), `sorted` (in front of what stands above its `base` line, behind what stands below) or `above` (over everything), `base` in tiles from the top of the image, and `collision` (the tiles from the base line down block the avatars of mod users). The server adds `id` and `author`.
+
 ### Validation and limits
 
 - Names and author: 40 characters max; summary: 300.
@@ -57,6 +68,7 @@ Animations belong to a floor (`floorId`), which keeps its id across map versions
 - Request body: 64 KiB max.
 - 20 publication attempts per hour per Gather account (per IP when not signed in).
 - Animations: 50 per floor, 100 objects each, 30 creation attempts per hour per Gather account (per IP when not signed in); period 0.5–600 s, amplitude 0–50 tiles, waves 0.5–50.
+- Custom objects: 100 per floor, 30 creation attempts per hour per Gather account, image URL 500 characters max; uploads: 512 KB max, png/jpeg/gif/webp checked by their first bytes, 20 per hour.
 - 30 install reports per hour per Gather account.
 - The `deleteToken` and `editToken` are only stored hashed (SHA-256).
 
@@ -73,6 +85,8 @@ One D1 database, `gather-mods-hub`, whose schema lives in `migrations/` (applied
 | `legacy_animations` | Animations still stored per map version, until a client migrates them                                     |
 | `installs`          | One per mod install: account, launcher, module versions, first and last report                            |
 | `announcements`     | Admin announcements; expired ones are not listed                                                          |
+| `custom_objects`    | One per custom object, with its `floor_id` and owner; `data` is the object as clients get it              |
+| `images`            | Uploaded images (bytes, type, owner)                                                                      |
 | `rate_limits`       | Writes per hour, per action and caller; past hours are dropped on the next write                          |
 
 Owned rows have `owner_id` (Gather account) or `token_hash` (created before sign-in); neither is returned. Until October 2026 the hub stored everything in the `PRESETS` KV namespace; `scripts/migrate-kv-to-d1.mjs` copied it into D1.
@@ -145,6 +159,7 @@ npm run announce -- post "New: edit your animations" "Click ✎ next to one of y
 | `src/presets.js`       | Presets validation and routes                                            |
 | `src/animations.js`    | Animations validation, routes and migration from per-map storage         |
 | `src/announcements.js` | Admin announcements                                                      |
+| `src/customObjects.js` | Custom objects and image uploads                                         |
 | `src/installs.js`      | Install reports and admin stats                                          |
 | `src/versions.js`      | Required updates: running versions against the published catalog         |
 | `src/common.js`        | HTTP helpers (CORS, JSON) and validation primitives                      |

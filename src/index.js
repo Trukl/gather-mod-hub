@@ -3,6 +3,7 @@ import { callerOf, signIn } from "./accounts.js";
 import { routeAnnouncements } from "./announcements.js";
 import { claimAnimations, routeAnimations } from "./animations.js";
 import { CORS, fail, json, readBody } from "./common.js";
+import { routeCustomObjects, routeImages } from "./customObjects.js";
 import { installStats, reportInstall } from "./installs.js";
 import { claimPresets, routePresets } from "./presets.js";
 import { updateRequired } from "./versions.js";
@@ -43,12 +44,14 @@ async function route(request, env) {
     return claim(env, request, caller);
   if (root === "announcements" && id === undefined)
     return routeAnnouncements(request, env, type, caller);
+  if (root === "images" && id === undefined) return routeImages(request, env, type, caller);
   if (!caller.accountId && !caller.isAdmin && Date.now() >= SIGN_IN_REQUIRED_FROM)
     return fail(401, "sign in required");
   if (root === "stats" && type === undefined && request.method === "GET")
     return caller.isAdmin ? installStats(env) : fail(403, "forbidden");
   if (root === "animations") return routeAnimations(request, env, type, id, url, caller);
   if (root === "presets") return routePresets(request, env, type, id, url, caller);
+  if (root === "objects") return routeCustomObjects(request, env, type, id, caller);
   return fail(404, "not found");
 }
 
