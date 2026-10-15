@@ -11,12 +11,46 @@ import {
   readBody,
   UUID_RE,
 } from "./common.js";
+import { isNewerVersion, runningVersions } from "./versions.js";
 
 const ANIMATION_TYPES = ["orbit", "line", "wave"];
 const MAX_ANIMATIONS_PER_FLOOR = 50;
 const MAX_ANIMATION_OBJECTS = 100;
 const MAX_COORD = 1_000_000;
 const ANIMATIONS_PER_HOUR = 30;
+// Path animations (Fun 1.7.0): a list of steps from the objects' resting
+// place. Offsets are world pixels from the resting place of the group's center.
+const PATH_FUN_VERSION = "1.7.0";
+const MAX_STEPS = 20;
+const MAX_OFFSET = 100_000;
+const MAX_EXPRESSION = 120;
+const MODES = ["block", "each"];
+const ORDERS = ["selection", "left-right", "top-bottom", "random"];
+const ENDS = ["loop", "pingpong", "once"];
+const SHAPES = ["line", "wave", "arc", "orbit", "custom"];
+const EASINGS = [
+  "linear",
+  "ease-in",
+  "ease-out",
+  "ease-in-out",
+  "sine-in-out",
+  "back-out",
+  "bounce-out",
+  "elastic-out",
+  "custom",
+];
+// Expressions are only checked token by token here; clients evaluate them
+// with their own parser, never as code.
+const EXPRESSION_RE =
+  /^(?:\s*(?:\d+(?:\.\d+)?|sqrt|sign|round|floor|sin|cos|tan|abs|exp|min|max|pi|t|[-+*/^(),]))*\s*$/;
+const cleanExpression = (s) =>
+  typeof s === "string" && s.trim() && s.length <= MAX_EXPRESSION && EXPRESSION_RE.test(s)
+    ? s.trim()
+    : null;
+const cleanOffset = (p) =>
+  inRange(p?.x, -MAX_OFFSET, MAX_OFFSET) && inRange(p.y, -MAX_OFFSET, MAX_OFFSET)
+    ? { x: p.x, y: p.y }
+    : null;
 
 // Animated objects are stable references: Gather's hashIdentifier (kept when
 // a new version of the map is published) plus type and position (tiles), or
@@ -35,14 +69,70 @@ function cleanObjectRefs(objects) {
   return refs.includes(null) ? null : refs;
 }
 
+function cleanStep(s) {
+  if (
+    !SHAPES.includes(s?.shape) ||
+    !EASINGS.includes(s.easing) ||
+    !inRange(s.duration, 0.05, 600) ||
+    !inRange(s.pause, 0, 600) ||
+    !inRange(s.rotate, -36_000, 36_000)
+  )
+    return null;
+  const step = {
+    shape: s.shape,
+    easing: s.easing,
+    duration: s.duration,
+    pause: s.pause,
+    rotate: s.rotate,
+  };
+  if (s.easing === "custom") {
+    step.easingExpr = cleanExpression(s.easingExpr);
+    if (!step.easingExpr) return null;
+  }
+  if (s.shape === "orbit") {
+    const center = cleanOffset(s.center);
+    if (!center || !inRange(s.turns, 0.05, 100) || ![1, -1].includes(s.direction)) return null;
+    return { ...step, center, turns: s.turns, direction: s.direction };
+  }
+  const to = cleanOffset(s.to);
+  if (!to) return null;
+  if (s.shape === "wave") {
+    if (!inRange(s.amplitude, 0, 50) || !inRange(s.waves, 0.5, 50) || typeof s.invert !== "boolean")
+      return null;
+    return { ...step, to, amplitude: s.amplitude, waves: s.waves, invert: s.invert };
+  }
+  if (s.shape === "arc") return inRange(s.bend, -50, 50) ? { ...step, to, bend: s.bend } : null;
+  if (s.shape === "custom") {
+    const x = cleanExpression(s.x);
+    const y = cleanExpression(s.y);
+    return x && y ? { ...step, to, x, y } : null;
+  }
+  return { ...step, to };
+}
+
+function cleanPathAnimation(a, name, objects) {
+  const steps = Array.isArray(a.steps) && a.steps.length <= MAX_STEPS ? a.steps.map(cleanStep) : [];
+  if (
+    !steps.length ||
+    steps.includes(null) ||
+    !MODES.includes(a.mode) ||
+    !ENDS.includes(a.end) ||
+    !inRange(a.stagger?.delay, 0, 60) ||
+    !ORDERS.includes(a.stagger.order)
+  )
+    return null;
+  const stagger = { delay: a.stagger.delay, order: a.stagger.order };
+  return { name, type: "path", objects, mode: a.mode, stagger, end: a.end, steps };
+}
+
 function cleanAnimation(a) {
   const name = cleanText(a?.name, MAX_NAME);
   const objects = cleanObjectRefs(a?.objects);
-  const { point, params } = a ?? {};
+  if (!name || !objects) return null;
+  if (a.type === "path") return cleanPathAnimation(a, name, objects);
+  const { point, params } = a;
   if (
-    !name ||
     !ANIMATION_TYPES.includes(a.type) ||
-    !objects ||
     !inRange(point?.x, -MAX_COORD, MAX_COORD) ||
     !inRange(point?.y, -MAX_COORD, MAX_COORD) ||
     !inRange(params?.period, 0.5, 600) ||
@@ -59,6 +149,13 @@ function cleanAnimation(a) {
     point: { x: point.x, y: point.y },
     params: { period, direction, amplitude, waves },
   };
+}
+
+// Mods before Fun 1.7.0 can't play path animations: they don't get them.
+function playsPaths(request, caller) {
+  if (caller.isAdmin) return true;
+  const fun = runningVersions(request)?.get("fun");
+  return !!fun && !isNewerVersion(PATH_FUN_VERSION, fun);
 }
 
 // One row per animation, on its floor: the floor survives new versions of its
@@ -103,8 +200,9 @@ const readLegacy = async (env, mapId) =>
   );
 
 // `?map=` adds the legacy animations of that map version, for the client to migrate.
-async function listAnimations(env, floorId, url, caller) {
-  const items = await readAnimations(env, floorId);
+async function listAnimations(env, floorId, url, request, caller) {
+  const paths = playsPaths(request, caller);
+  const items = (await readAnimations(env, floorId)).filter((a) => paths || a.type !== "path");
   const mapId = url.searchParams.get("map");
   const legacy = UUID_RE.test(mapId || "") ? await readLegacy(env, mapId) : [];
   return json({
@@ -132,7 +230,8 @@ async function migrateAnimations(env, floorId, request, caller) {
     ...inserts,
     env.DB.prepare("DELETE FROM legacy_animations WHERE map_id = ?").bind(body.mapId),
   ]);
-  const items = await readAnimations(env, floorId);
+  const paths = playsPaths(request, caller);
+  const items = (await readAnimations(env, floorId)).filter((a) => paths || a.type !== "path");
   return json({ now: Date.now(), items: items.map((a) => publicAnimation(a, caller)) });
 }
 
@@ -214,7 +313,7 @@ export async function claimAnimations(env, claims, caller) {
 export function routeAnimations(request, env, floorId, id, url, caller) {
   if (!UUID_RE.test(floorId || "")) return fail(404, "not found");
   if (id === undefined || id === "") {
-    if (request.method === "GET") return listAnimations(env, floorId, url, caller);
+    if (request.method === "GET") return listAnimations(env, floorId, url, request, caller);
     if (request.method === "POST") return createAnimation(env, floorId, request, caller);
     return fail(405, "method not allowed");
   }
