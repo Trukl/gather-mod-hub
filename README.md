@@ -61,6 +61,8 @@ Animations belong to a floor (`floorId`), which keeps its id across map versions
 
 `{ name, imageUrl, opacity, mode, free?, skin? }`: `imageUrl` is an `https` URL or an image of this hub (`/images/:id`); `opacity` 0.1–1. `mode: "skin"` draws the image over a real object, `skin: { object: { hash, variant, x, y } }` (a stable reference, as for animations). `mode: "free"` places it alone, `free: { x, y, width, height, layer, base, collision }`: top-left corner and size in tiles (0.25–30), `layer` `floor` (under avatars and objects), `sorted` (in front of what stands above its `base` line, behind what stands below) or `above` (over everything), `base` in tiles from the top of the image, and `collision` (the tiles from the base line down block the avatars of mod users). The server adds `id` and `author`.
 
+Both modes accept `plane: { relation, object }`: the image is drawn just in `front` of or just `behind` that real object (a stable reference) instead of at its layer's or restyled object's depth.
+
 ### Validation and limits
 
 - Names and author: 40 characters max; summary: 300.
