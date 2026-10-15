@@ -19,18 +19,19 @@ const MAX_COORD = 1_000_000;
 const ANIMATIONS_PER_HOUR = 30;
 
 // Animated objects are stable references: Gather's hashIdentifier (kept when
-// a new version of the map is published) plus type and position (tiles).
+// a new version of the map is published) plus type and position (tiles), or
+// a custom object of the floor ({ custom: id, x, y }).
 function cleanObjectRefs(objects) {
   if (!Array.isArray(objects) || !objects.length || objects.length > MAX_ANIMATION_OBJECTS)
     return null;
-  const refs = objects.map((o) =>
-    UUID_RE.test(o?.hash || "") &&
-    UUID_RE.test(o.variant || "") &&
-    inRange(o.x, -MAX_COORD, MAX_COORD) &&
-    inRange(o.y, -MAX_COORD, MAX_COORD)
+  const refs = objects.map((o) => {
+    if (!inRange(o?.x, -MAX_COORD, MAX_COORD) || !inRange(o.y, -MAX_COORD, MAX_COORD)) return null;
+    if (o.custom !== undefined)
+      return ID_RE.test(o.custom) ? { custom: o.custom, x: o.x, y: o.y } : null;
+    return UUID_RE.test(o.hash || "") && UUID_RE.test(o.variant || "")
       ? { hash: o.hash, variant: o.variant, x: o.x, y: o.y }
-      : null,
-  );
+      : null;
+  });
   return refs.includes(null) ? null : refs;
 }
 

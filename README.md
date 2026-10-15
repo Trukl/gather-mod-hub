@@ -55,6 +55,8 @@ From Core 1.4.0, the mod sends the versions of its running modules with every re
 
 `{ name, type, objects: [{ hash, variant, x, y }], point: { x, y }, params: { period, direction, amplitude, waves } }`: `type` is `orbit`, `line` or `wave`; `objects` are the animated objects as stable references: Gather's `hashIdentifier` (kept when a space admin publishes a new version of the map, while object ids change), the `CatalogItemVariant` and the position in tiles; `point` (world pixels) is the orbit center or the end point; `period` is in seconds per loop, `direction` 1 (clockwise) or -1, `amplitude` in tiles and `waves` for the wave type. The server adds `id`, `author`, `running` and `startedAt` (ms).
 
+An animated object can also be a custom object of the floor: `{ custom: id, x, y }` (its anchor in tiles when the animation was saved).
+
 Animations belong to a floor (`floorId`), which keeps its id across map versions. They used to be stored per map version with object ids (table `legacy_animations`); clients move them with `/migrate` the first time they open that map version.
 
 ### Custom object format
@@ -70,7 +72,7 @@ Both modes accept `plane: { relation, object }`: the image is drawn just in `fro
 - Request body: 64 KiB max.
 - 20 publication attempts per hour per Gather account (per IP when not signed in).
 - Animations: 50 per floor, 100 objects each, 30 creation attempts per hour per Gather account (per IP when not signed in); period 0.5–600 s, amplitude 0–50 tiles, waves 0.5–50.
-- Custom objects: 100 per floor, 30 creation attempts per hour per Gather account, image URL 500 characters max; uploads: 512 KB max, png/jpeg/gif/webp checked by their first bytes, 20 per hour.
+- Custom objects: 300 per floor, 150 creation attempts per hour per Gather account, image URL 500 characters max; uploads: 512 KB max, png/jpeg/gif/webp checked by their first bytes, 20 per hour.
 - 30 install reports per hour per Gather account.
 - The `deleteToken` and `editToken` are only stored hashed (SHA-256).
 
