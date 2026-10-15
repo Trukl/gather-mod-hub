@@ -16,8 +16,8 @@ import {
   UUID_RE,
 } from "./common.js";
 
-const MAX_PER_FLOOR = 100;
-const CREATES_PER_HOUR = 30;
+const MAX_PER_FLOOR = 300;
+const CREATES_PER_HOUR = 150;
 const UPLOADS_PER_HOUR = 20;
 const MAX_URL = 500;
 const MAX_TILES = 30;
