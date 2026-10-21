@@ -25,6 +25,7 @@ const MAX_COORD = 1_000_000;
 const MAX_IMAGE_BYTES = 512 * 1024;
 const LAYERS = ["floor", "sorted", "above"];
 const PLANE_RELATIONS = ["front", "behind"];
+const MAX_ANCHORS = 5;
 const HUB_IMAGE_RE = /^\/images\/\d{13}[0-9a-f]{8}$/;
 // The first bytes of each accepted format, so nothing else is ever served.
 const IMAGE_TYPES = {
@@ -66,9 +67,19 @@ function cleanPlane(p) {
     : null;
 }
 
+// Real objects spread over the map (stable references, 5 max): clients move a
+// free image by what most of them moved when a new version of the map shifts
+// everything.
+function cleanAnchors(a) {
+  if (a === undefined) return {};
+  const anchors = Array.isArray(a) && a.length <= MAX_ANCHORS ? a.map(cleanRef) : [];
+  return anchors.length && !anchors.includes(null) ? { anchors } : null;
+}
+
 // Free objects are placed in tiles: top-left corner, size, layer (under
 // everything, sorted with avatars and objects by the `base` line, or above
-// everything), and whether the tiles under the base line block avatars.
+// everything), whether the tiles under the base line block avatars, and
+// optional anchors.
 function cleanCustomObject(o) {
   const name = cleanText(o?.name, MAX_NAME);
   const imageUrl = cleanImageUrl(o?.imageUrl);
@@ -80,6 +91,7 @@ function cleanCustomObject(o) {
     return object ? { ...common, mode: "skin", skin: { object } } : null;
   }
   const f = o.free;
+  const anchors = cleanAnchors(f?.anchors);
   if (
     o.mode !== "free" ||
     !inRange(f?.x, -MAX_COORD, MAX_COORD) ||
@@ -88,11 +100,16 @@ function cleanCustomObject(o) {
     !inRange(f.height, 0.25, MAX_TILES) ||
     !LAYERS.includes(f.layer) ||
     !inRange(f.base, 0, f.height) ||
-    typeof f.collision !== "boolean"
+    typeof f.collision !== "boolean" ||
+    !anchors
   )
     return null;
   const { x, y, width, height, layer, base, collision } = f;
-  return { ...common, mode: "free", free: { x, y, width, height, layer, base, collision } };
+  return {
+    ...common,
+    mode: "free",
+    free: { x, y, width, height, layer, base, collision, ...anchors },
+  };
 }
 
 const fromRow = (row) => ({ ...JSON.parse(row.data), ...ownerOf(row) });
