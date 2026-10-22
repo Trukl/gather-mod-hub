@@ -6,6 +6,7 @@ import { CORS, fail, json, readBody } from "./common.js";
 import { routeCustomObjects, routeImages } from "./customObjects.js";
 import { installStats, reportInstall } from "./installs.js";
 import { claimPresets, routePresets } from "./presets.js";
+import { presence } from "./presence.js";
 import { updateRequired } from "./versions.js";
 
 // Mods older than Community hub 1.1.0 / Fun 1.3.0 don't sign in: they are
@@ -38,6 +39,7 @@ async function route(request, env) {
   const outdated = await updateRequired(env, request);
   if (outdated) return outdated;
   if (root === "auth" && type === undefined && post) return signIn(env, request);
+  if (root === "presence" && type === undefined && post) return presence(env, request);
 
   const caller = await callerOf(env, request);
   if (root === "auth" && type === "claim" && id === undefined && post)
