@@ -17,6 +17,8 @@ import {
 } from "./common.js";
 
 const MAX_PER_FLOOR = 300;
+// Per Gather account on a floor, so one account can't fill it.
+const MAX_PER_OWNER = 30;
 const CREATES_PER_HOUR = 150;
 const UPLOADS_PER_HOUR = 20;
 const MAX_URL = 500;
@@ -45,12 +47,14 @@ function cleanRef(o) {
     : null;
 }
 
-// An https image, or one uploaded to this hub ("/images/<id>").
+// An https image, or one uploaded to this hub ("/images/<id>"). URLs are
+// kept normalized (quotes and spaces percent-encoded), so clients can quote them.
 function cleanImageUrl(url) {
   if (typeof url !== "string" || url.length > MAX_URL) return null;
   if (HUB_IMAGE_RE.test(url)) return url;
   try {
-    return new URL(url).protocol === "https:" ? url : null;
+    const { protocol, href } = new URL(url);
+    return protocol === "https:" && href.length <= MAX_URL ? href : null;
   } catch {
     return null;
   }
@@ -142,11 +146,23 @@ async function createObject(env, floorId, request, caller) {
   const { meta } = await env.DB.prepare(
     `INSERT INTO custom_objects (id, floor_id, data, owner_id)
      SELECT ?1, ?2, ?3, ?4
-     WHERE (SELECT count(*) FROM custom_objects WHERE floor_id = ?2) < ?5`,
+     WHERE (SELECT count(*) FROM custom_objects WHERE floor_id = ?2) < ?5
+       AND (SELECT count(*) FROM custom_objects WHERE floor_id = ?2 AND owner_id = ?4) < ?6`,
   )
-    .bind(object.id, floorId, JSON.stringify(object), caller.accountId, MAX_PER_FLOOR)
+    .bind(
+      object.id,
+      floorId,
+      JSON.stringify(object),
+      caller.accountId,
+      MAX_PER_FLOOR,
+      MAX_PER_OWNER,
+    )
     .run();
-  if (!meta.changes) return fail(409, "too many custom objects on this floor");
+  if (!meta.changes)
+    return fail(
+      409,
+      `too many custom objects on this floor (${MAX_PER_FLOOR}, ${MAX_PER_OWNER} per account)`,
+    );
   return json({ object: { ...object, mine: true } }, 201);
 }
 

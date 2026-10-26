@@ -15,6 +15,8 @@ import { isNewerVersion, runningVersions } from "./versions.js";
 
 const ANIMATION_TYPES = ["orbit", "line", "wave"];
 const MAX_ANIMATIONS_PER_FLOOR = 50;
+// Per Gather account on a floor, so one account can't fill it.
+const MAX_ANIMATIONS_PER_OWNER = 10;
 const MAX_ANIMATION_OBJECTS = 100;
 const MAX_COORD = 1_000_000;
 const ANIMATIONS_PER_HOUR = 30;
@@ -169,12 +171,14 @@ const readAnimations = async (env, floorId) =>
       .bind(floorId)
       .all()
   ).results.map(fromRow);
-// Inserts unless the floor is full or the id exists; meta.changes tells which.
-function insertAnimation(env, floorId, { ownerId, tokenHash, ...animation }) {
+// Inserts unless the floor is full, its owner has `perOwner` animations on
+// the floor already, or the id exists; meta.changes tells which.
+function insertAnimation(env, floorId, { ownerId, tokenHash, ...animation }, perOwner) {
   return env.DB.prepare(
     `INSERT OR IGNORE INTO animations (id, floor_id, data, owner_id, token_hash)
      SELECT ?1, ?2, ?3, ?4, ?5
-     WHERE (SELECT count(*) FROM animations WHERE floor_id = ?2) < ?6`,
+     WHERE (SELECT count(*) FROM animations WHERE floor_id = ?2) < ?6
+       AND (?4 IS NULL OR (SELECT count(*) FROM animations WHERE floor_id = ?2 AND owner_id = ?4) < ?7)`,
   ).bind(
     animation.id,
     floorId,
@@ -182,6 +186,7 @@ function insertAnimation(env, floorId, { ownerId, tokenHash, ...animation }) {
     ownerId ?? null,
     tokenHash ?? null,
     MAX_ANIMATIONS_PER_FLOOR,
+    perOwner,
   );
 }
 const publicAnimation = ({ tokenHash, ownerId, ...a }, caller) => ({
@@ -199,7 +204,12 @@ const readLegacy = async (env, mapId) =>
     )?.items ?? "[]",
   );
 
-// `?map=` adds the legacy animations of that map version, for the client to migrate.
+// A legacy animation the caller moves without its token: its own, or nobody's.
+const movable = (animation, caller) =>
+  (!animation.ownerId && !animation.tokenHash) || isMine(animation, caller);
+
+// `?map=` adds the legacy animations of that map version, for the client to
+// migrate, with `movable` when it needs no token to move them.
 async function listAnimations(env, floorId, url, request, caller) {
   const paths = playsPaths(request, caller);
   const items = (await readAnimations(env, floorId)).filter((a) => paths || a.type !== "path");
@@ -208,27 +218,46 @@ async function listAnimations(env, floorId, url, request, caller) {
   return json({
     now: Date.now(),
     items: items.map((a) => publicAnimation(a, caller)),
-    ...(legacy.length && { legacy: legacy.map((a) => publicAnimation(a, caller)) }),
+    ...(legacy.length && {
+      legacy: legacy.map((a) => ({ ...publicAnimation(a, caller), movable: movable(a, caller) })),
+    }),
   });
 }
 
 // The client still has the objects of the legacy animations' map version and
-// sends their references; unresolved animations (objects gone) are dropped.
+// sends their references. Only the caller's animations move (owned by the
+// account, or proven with their `token`, which hands them to it) and those
+// nobody owns; unresolved ones (objects gone) are dropped, the others wait
+// for their owner.
 async function migrateAnimations(env, floorId, request, caller) {
   if (!caller.accountId) return fail(401, "sign in required");
   const body = await readBody(request);
   if (!UUID_RE.test(body?.mapId || "")) return fail(400, "invalid map");
-  const refs = new Map(
-    (Array.isArray(body.items) ? body.items : []).map((i) => [i?.id, i?.objects]),
-  );
+  const sent = new Map((Array.isArray(body.items) ? body.items : []).map((i) => [i?.id, i]));
   const inserts = [];
-  for (const { ids, ...animation } of await readLegacy(env, body.mapId)) {
-    const objects = cleanObjectRefs(refs.get(animation.id));
-    if (objects) inserts.push(insertAnimation(env, floorId, { ...animation, objects }));
+  const kept = [];
+  for (const legacy of await readLegacy(env, body.mapId)) {
+    const { ids, ...animation } = legacy;
+    const item = sent.get(animation.id);
+    const owned = movable(animation, caller)
+      ? animation
+      : await handOver(animation, item?.token, caller);
+    if (!owned) {
+      kept.push(legacy);
+      continue;
+    }
+    const objects = cleanObjectRefs(item?.objects);
+    if (objects)
+      inserts.push(insertAnimation(env, floorId, { ...owned, objects }, MAX_ANIMATIONS_PER_FLOOR));
   }
   await env.DB.batch([
     ...inserts,
-    env.DB.prepare("DELETE FROM legacy_animations WHERE map_id = ?").bind(body.mapId),
+    kept.length
+      ? env.DB.prepare("UPDATE legacy_animations SET items = ? WHERE map_id = ?").bind(
+          JSON.stringify(kept),
+          body.mapId,
+        )
+      : env.DB.prepare("DELETE FROM legacy_animations WHERE map_id = ?").bind(body.mapId),
   ]);
   const paths = playsPaths(request, caller);
   const items = (await readAnimations(env, floorId)).filter((a) => paths || a.type !== "path");
@@ -250,8 +279,12 @@ async function createAnimation(env, floorId, request, caller) {
     startedAt: Date.now(),
     ...stored,
   };
-  const { meta } = await insertAnimation(env, floorId, animation).run();
-  if (!meta.changes) return fail(409, "too many animations on this floor");
+  const { meta } = await insertAnimation(env, floorId, animation, MAX_ANIMATIONS_PER_OWNER).run();
+  if (!meta.changes)
+    return fail(
+      409,
+      `too many animations on this floor (${MAX_ANIMATIONS_PER_FLOOR}, ${MAX_ANIMATIONS_PER_OWNER} per account)`,
+    );
   return json(
     { animation: publicAnimation(animation, caller), editToken: token, now: Date.now() },
     201,

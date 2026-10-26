@@ -1,10 +1,9 @@
-// Presence: while it runs, the mod's core pings every 2 minutes with its Gather
-// ID token (verified, only the account id is kept, with the time) and the
-// account ids of the players it sees. The answer lists those that ran the mod
+// Presence: while it runs, the mod's core pings every 2 minutes with its hub
+// session (cores before 1.8.0: its Gather ID token, verified; only the account
+// id is kept, with the time) and the account ids of the players it sees. The answer lists those that ran the mod
 // in the last 5 minutes, so the mod can mark them. `hidden` deletes the
 // caller's row instead: it still sees the others.
-import { withinRateLimit } from "./accounts.js";
-import { verifyGatherToken } from "./auth.js";
+import { accountOf, withinRateLimit } from "./accounts.js";
 import { fail, json, readBody, UUID_RE } from "./common.js";
 
 const ACTIVE_MS = 5 * 60_000;
@@ -21,8 +20,8 @@ export async function presence(env, request) {
     typeof body.hidden !== "boolean"
   )
     return fail(400, "invalid presence");
-  const accountId = await verifyGatherToken(body.gatherToken);
-  if (!accountId) return fail(401, "invalid Gather token");
+  const accountId = await accountOf(env, request, body);
+  if (!accountId) return fail(401, "sign in required");
   if (!(await withinRateLimit(env, "prs", PINGS_PER_HOUR, request, { accountId })))
     return fail(429, "too many pings");
   const now = Date.now();

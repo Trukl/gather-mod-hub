@@ -1,6 +1,6 @@
 // Who is calling, what they own, and how often they may write.
 import { createSession, sessionAccount, verifyGatherToken } from "./auth.js";
-import { bearer, fail, json, readBody, sha256 } from "./common.js";
+import { bearer, fail, json, readBody, sameSecret, sha256 } from "./common.js";
 
 // The bearer is a hub session (signed in with Gather), the admin token, or the
 // per-item token handed out to mods that don't sign in yet.
@@ -9,8 +9,16 @@ export async function callerOf(env, request) {
   return {
     token,
     accountId: await sessionAccount(env, token),
-    isAdmin: Boolean(env.ADMIN_TOKEN) && token === env.ADMIN_TOKEN,
+    isAdmin: Boolean(env.ADMIN_TOKEN && token) && (await sameSecret(token, env.ADMIN_TOKEN)),
   };
+}
+
+// Gather account of the core's own requests (presence, install reports): its
+// hub session, or the Gather ID token in the body for cores before 1.8.0.
+export async function accountOf(env, request, body) {
+  return (
+    (await sessionAccount(env, bearer(request))) ?? (await verifyGatherToken(body?.gatherToken))
+  );
 }
 
 export async function signIn(env, request) {
