@@ -1,0 +1,25 @@
+name: Check
+
+# Every pull request, before main deploys it: the worker builds, the
+# migrations apply to an empty database, and the code is formatted. The main
+# ruleset requires this job.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npx wrangler deploy --dry-run --outdir dist
+      - run: npx wrangler d1 migrations apply gather-mods-hub --local
+      - run: npx --yes prettier@3 --check --print-width 100 "src/**/*.js" "scripts/**/*.mjs" README.md
