@@ -155,8 +155,8 @@ async function deletePreset(env, type, id, caller) {
 // Ids of the presets handed to the caller's account.
 export async function claimPresets(env, claims, caller) {
   const claimed = [];
-  for (const { type, id, token } of claims) {
-    if (!TYPES.includes(type) || !ID_RE.test(id || "")) continue;
+  const valid = claims.filter((p) => TYPES.includes(p?.type) && ID_RE.test(p.id || ""));
+  for (const { type, id, token } of valid) {
     const row = await findPreset(env, type, id);
     const owned = row && (await handOver(ownerOf(row), token, caller));
     if (!owned) continue;

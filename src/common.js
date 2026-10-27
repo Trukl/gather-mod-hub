@@ -1,6 +1,8 @@
 // Shared HTTP helpers and validation primitives.
 const ALLOWED_ORIGIN = "https://app.v2.gather.town";
 const MAX_BODY_CHARS = 64 * 1024;
+// A character takes 4 bytes at most: larger bodies are refused unread.
+const MAX_BODY_BYTES = 4 * MAX_BODY_CHARS;
 
 export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Item ids sort newest first: reversed timestamp, then random hex.
@@ -38,6 +40,7 @@ export const fail = (status, error) => json({ error }, status);
 
 // Parsed JSON body, null when invalid or too large.
 export async function readBody(request) {
+  if (Number(request.headers.get("Content-Length")) > MAX_BODY_BYTES) return null;
   const raw = await request.text();
   if (raw.length > MAX_BODY_CHARS) return null;
   try {
@@ -60,6 +63,13 @@ export const inRange = (v, min, max) =>
 export async function sha256(s) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+// Constant-time comparison of two secrets, hashed first to the same length.
+export async function sameSecret(a, b) {
+  const [x, y] = await Promise.all(
+    [a, b].map((s) => crypto.subtle.digest("SHA-256", new TextEncoder().encode(s))),
+  );
+  return crypto.subtle.timingSafeEqual(x, y);
 }
 export const newId = () =>
   String(1e13 - Date.now()).padStart(13, "0") + crypto.randomUUID().replace(/-/g, "").slice(0, 8);

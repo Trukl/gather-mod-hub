@@ -1,8 +1,8 @@
 // Install reports: the mod's core sends, on first install and after each
-// update, a random install id, the installed module versions and its Gather ID
-// token (verified, only the account id is kept). Admins read the totals.
-import { withinRateLimit } from "./accounts.js";
-import { verifyGatherToken } from "./auth.js";
+// update, a random install id and the installed module versions, with its hub
+// session (cores before 1.8.0: its Gather ID token, verified; only the account
+// id is kept). Admins read the totals.
+import { accountOf, withinRateLimit } from "./accounts.js";
 import { cleanModuleVersions, fail, json, readBody, UUID_RE } from "./common.js";
 
 const REPORTS_PER_HOUR = 30;
@@ -19,8 +19,8 @@ export async function reportInstall(env, request) {
   const versions = cleanVersions(body?.versions);
   if (!UUID_RE.test(body?.installId || "") || !versions || typeof body.launcher !== "boolean")
     return fail(400, "invalid report");
-  const accountId = await verifyGatherToken(body.gatherToken);
-  if (!accountId) return fail(401, "invalid Gather token");
+  const accountId = await accountOf(env, request, body);
+  if (!accountId) return fail(401, "sign in required");
   if (!(await withinRateLimit(env, "rli", REPORTS_PER_HOUR, request, { accountId })))
     return fail(429, "too many reports");
   const now = new Date().toISOString();
