@@ -106,6 +106,8 @@ Every push to `main` that touches `src/`, `migrations/`, `wrangler.toml` or the 
 gh secret set CLOUDFLARE_API_TOKEN --repo Trukl/gather-mod-hub
 ```
 
+`main` only takes pull requests (ruleset “Protect main”: no direct push, no force push, no deletion), once the `Check` workflow (`.github/workflows/check.yml`) passes: the worker builds (`wrangler deploy --dry-run`), the migrations apply to an empty local D1, and `prettier --check` passes. Since every merge deploys, nothing that doesn't build reaches production.
+
 Deploying from a local checkout still works:
 
 ```bash
